@@ -948,6 +948,40 @@ fn check_file_copy_keeps_image_layout() {
 }
 
 #[test]
+fn check_file_copy_keeps_holes() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let sparse_path = image_path.with_file_name("sparse.wic");
+    let bmap_path = PathBuf::from(format!("{}.bmap", sparse_path.to_string_lossy()));
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+
+    let status = std::process::Command::new("cp")
+        .arg("--sparse=always")
+        .arg(&image_path)
+        .arg(&sparse_path)
+        .status()
+        .expect("run cp");
+    assert!(status.success(), "sparse copy of the test image failed");
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},factory:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&sparse_path)
+        .arg("-b")
+        .assert()
+        .success();
+
+    let meta = sparse_path.metadata().expect("image metadata");
+    assert!(meta.blocks() * STAT_BLOCK_SIZE < meta.len());
+    let bmap = std::fs::read_to_string(&bmap_path).expect("read bmap");
+    assert!(bmap_value(&bmap, "MappedBlocksCount") < bmap_value(&bmap, "BlocksCount"));
+}
+
+#[test]
 fn check_bmap_generation_wic() {
     let tr = Testrunner::new(function_name!().split("::").last().unwrap());
     let image_path = tr.to_pathbuf("testfiles/image.wic");
