@@ -4,6 +4,8 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
 
+pub const SECTOR_SIZE: u64 = 512;
+
 pub struct PartitionData {
     pub num: u32,
     pub start: u64,
@@ -41,7 +43,7 @@ pub fn get_partition_data<P: AsRef<Path>>(path: P, partition_num: u32) -> Result
     // Try MBR — iter() includes logical partitions (5, 6, ...)
     file.seek(SeekFrom::Start(0))
         .context("failed to seek to start of image")?;
-    let mbr = mbrman::MBR::read_from(&mut file, 512)
+    let mbr = mbrman::MBR::read_from(&mut file, SECTOR_SIZE as u32)
         .with_context(|| format!("image is neither valid GPT nor MBR (GPT error: {gpt_err})"))?;
     for (i, p) in mbr.iter() {
         if u32::try_from(i).ok() == Some(partition_num) && p.is_used() {
@@ -77,10 +79,10 @@ pub fn get_partitions<P: AsRef<Path>>(path: P) -> Result<Vec<PartitionData>> {
 
     file.seek(SeekFrom::Start(0))
         .context("failed to seek to start of image")?;
-    let mbr = mbrman::MBR::read_from(&mut file, 512)
+    let mbr = mbrman::MBR::read_from(&mut file, SECTOR_SIZE as u32)
         .with_context(|| format!("image is neither valid GPT nor MBR (GPT error: {gpt_err})"))?;
     mbr.iter()
-        .filter(|(_, p)| p.is_used())
+        .filter(|(_, p)| p.is_used() && !p.is_extended())
         .map(|(num, p)| {
             Ok(PartitionData {
                 num: u32::try_from(num).context("MBR partition number out of range")?,

@@ -1,3 +1,4 @@
+use crate::file::partition::SECTOR_SIZE;
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use std::collections::HashMap;
@@ -10,7 +11,6 @@ use std::str::FromStr;
 use stdext::function_name;
 use uuid::Uuid;
 
-const SECTOR_SIZE: u64 = 512;
 const COMPARE_BLOCK_SIZE: usize = 4096;
 const COPY_CHUNK_SIZE: usize = 1024 * 1024;
 
@@ -23,6 +23,11 @@ const EXT4_S_JOURNAL_INUM: usize = 0xe0;
 const EXT4_MAGIC: u16 = 0xef53;
 const EXT4_FEATURE_COMPAT_HAS_JOURNAL: u32 = 0x4;
 const EXT4_MIN_BLOCK_SIZE: u64 = 1024;
+const EXT4_MAX_LOG_BLOCK_SIZE: u32 = 6;
+
+const DEBUGFS: &str = "debugfs";
+// debugfs is installed to sbin, which is not always in the PATH of a normal user
+const DEBUGFS_SBIN: &str = "/usr/sbin/debugfs";
 
 #[derive(clap::ValueEnum, Debug, Clone, Eq, Hash, PartialEq)]
 #[clap(rename_all = "verbatim")]
@@ -520,22 +525,33 @@ fn read_ext4_journal(image: &fs::File, offset: u64) -> Result<Option<Ext4Journal
         return Ok(None);
     }
 
-    let block_size = EXT4_MIN_BLOCK_SIZE
-        .checked_shl(le32(EXT4_S_LOG_BLOCK_SIZE))
-        .context("read_ext4_journal: invalid block size")?;
+    let log_block_size = le32(EXT4_S_LOG_BLOCK_SIZE);
+    anyhow::ensure!(
+        log_block_size <= EXT4_MAX_LOG_BLOCK_SIZE,
+        "read_ext4_journal: invalid block size"
+    );
+    let block_size = EXT4_MIN_BLOCK_SIZE << log_block_size;
 
     Ok(Some(Ext4Journal { inode, block_size }))
 }
 
 fn ext4_journal_blocks(image_file: &str, offset: u64, inode: u32) -> Result<Vec<u64>> {
-    let mut debugfs = Command::new("debugfs");
-    debugfs
-        .arg("-R")
-        .arg(format!("blocks <{inode}>"))
-        .arg(format!("{image_file}?offset={offset}"));
-    let output = debugfs
-        .output()
-        .context(format!("ext4_journal_blocks: cannot run {debugfs:?}"))?;
+    let debugfs_cmd = |program| {
+        let mut cmd = Command::new(program);
+        cmd.arg("-R")
+            .arg(format!("blocks <{inode}>"))
+            .arg(format!("{image_file}?offset={offset}"));
+        cmd
+    };
+    let mut debugfs = debugfs_cmd(DEBUGFS);
+    let output = match debugfs.output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            debugfs = debugfs_cmd(DEBUGFS_SBIN);
+            debugfs.output()
+        }
+        output => output,
+    }
+    .context(format!("ext4_journal_blocks: cannot run {debugfs:?}"))?;
     anyhow::ensure!(
         output.status.success(),
         "ext4_journal_blocks: {debugfs:?} failed: {}",
@@ -569,9 +585,16 @@ fn allocate_ext4_journals(image_file: &str) -> Result<()> {
         .write(true)
         .open(image_file)
         .context(format!("allocate_ext4_journals: cannot open {image_file}"))?;
+    let image_len = image
+        .metadata()
+        .context("allocate_ext4_journals: cannot get image size")?
+        .len();
 
     for partition in get_partitions(image_file)? {
         let offset = partition.start * SECTOR_SIZE;
+        if offset + EXT4_SUPERBLOCK_OFFSET + EXT4_SUPERBLOCK_SIZE as u64 > image_len {
+            continue;
+        }
         let Some(journal) = read_ext4_journal(&image, offset)? else {
             continue;
         };
@@ -615,7 +638,7 @@ pub fn generate_bmap_file(image_file: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::file::functions::*;
 
     const PART_START_LBA: u32 = 2048;
     const PART_SECTORS: u32 = 16384;
