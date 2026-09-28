@@ -97,3 +97,22 @@ pub fn is_gpt<P: AsRef<Path>>(path: P) -> Result<bool> {
     let mut file = File::open(path.as_ref()).context("is_gpt: failed to open image")?;
     Ok(gptman::GPT::find_from(&mut file).is_ok())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::file::partition::*;
+
+    const TEST_IMAGE: &str = "testfiles/image.wic";
+    const MBR_EXTENDED_PARTITION: u32 = 4;
+
+    #[test]
+    fn get_partitions_skips_mbr_extended_entry() {
+        let nums: Vec<u32> = get_partitions(TEST_IMAGE)
+            .expect("read partitions")
+            .iter()
+            .map(|p| p.num)
+            .collect();
+        assert!(!nums.contains(&MBR_EXTENDED_PARTITION));
+        assert!(nums.contains(&(MBR_EXTENDED_PARTITION + 1)));
+    }
+}

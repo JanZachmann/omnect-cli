@@ -168,17 +168,19 @@ mod tests {
     const MBR_DISK_SIGNATURE: [u8; 4] = [1, 2, 3, 4];
     const MBR_TYPE_LINUX: u8 = 0x83;
     const BMAP_BLOCK_SIZE: u64 = 4096;
+    // content an earlier installation left on the device
+    const OLD_CONTENT_BYTE: u8 = 0xa5;
+    const JOURNAL_INODE: u32 = 8;
+    const INVALID_LOG_BLOCK_SIZE: u32 = 40;
 
     fn run(cmd: &mut Command) {
         let status = cmd.status().expect("run command");
         assert!(status.success(), "{cmd:?} failed");
     }
 
-    fn create_image_with_ext4_journal(image: &Path) {
-        let raw = image.with_extension("raw");
-        let mut f = fs::File::create(&raw).expect("create image");
-        f.set_len(u64::from(PART_START_LBA + PART_SECTORS) * SECTOR_SIZE)
-            .expect("set image size");
+    fn create_image_with_mbr(image: &Path, len: u64) {
+        let mut f = fs::File::create(image).expect("create image");
+        f.set_len(len).expect("set image size");
         let mut mbr = mbrman::MBR::new_from(&mut f, SECTOR_SIZE as u32, MBR_DISK_SIGNATURE)
             .expect("create mbr");
         mbr[1] = mbrman::MBRPartitionEntry {
@@ -190,6 +192,11 @@ mod tests {
             sectors: PART_SECTORS,
         };
         mbr.write_into(&mut f).expect("write mbr");
+    }
+
+    fn create_image_with_ext4_journal(image: &Path) {
+        let raw = image.with_extension("raw");
+        create_image_with_mbr(&raw, u64::from(PART_START_LBA + PART_SECTORS) * SECTOR_SIZE);
 
         let offset = u64::from(PART_START_LBA) * SECTOR_SIZE;
         let fs_blocks = u64::from(PART_SECTORS) * SECTOR_SIZE / FS_BLOCK_SIZE;
@@ -241,6 +248,55 @@ mod tests {
             .count()
     }
 
+    /// Writes the blocks `bmap` maps onto a device that still holds old content, as a bmap
+    /// flash does.
+    fn bmap_flash(image: &str, bmap: &str, device: &Path) {
+        let image = fs::File::open(image).expect("open image");
+        let len = image.metadata().expect("image metadata").len();
+        fs::write(
+            device,
+            vec![OLD_CONTENT_BYTE; usize::try_from(len).expect("image size")],
+        )
+        .expect("write old content");
+        let device = fs::OpenOptions::new()
+            .write(true)
+            .open(device)
+            .expect("open device");
+
+        let mut buf = vec![0u8; usize::try_from(BMAP_BLOCK_SIZE).expect("block size")];
+        for (first, last) in bmap_ranges(bmap) {
+            for block in first..=last {
+                image
+                    .read_exact_at(&mut buf, block * BMAP_BLOCK_SIZE)
+                    .expect("read image block");
+                device
+                    .write_all_at(&buf, block * BMAP_BLOCK_SIZE)
+                    .expect("write device block");
+            }
+        }
+    }
+
+    fn journal_on_device_matches_image(image: &str, device: &Path) -> bool {
+        let offset = u64::from(PART_START_LBA) * SECTOR_SIZE;
+        let image_file = fs::File::open(image).expect("open image");
+        let device = fs::File::open(device).expect("open device");
+        let journal = read_ext4_journal(&image_file, offset)
+            .expect("read superblock")
+            .expect("ext4 with journal");
+
+        let block_size = usize::try_from(journal.block_size).expect("block size");
+        let (mut a, mut b) = (vec![0u8; block_size], vec![0u8; block_size]);
+        ext4_journal_blocks(image, offset, journal.inode)
+            .expect("journal blocks")
+            .iter()
+            .all(|block| {
+                let pos = offset + block * journal.block_size;
+                image_file.read_exact_at(&mut a, pos).expect("read image");
+                device.read_exact_at(&mut b, pos).expect("read device");
+                a == b
+            })
+    }
+
     #[test]
     fn generate_bmap_file_maps_ext4_journal() {
         let dir = tempfile::tempdir().expect("create temp dir");
@@ -256,14 +312,47 @@ mod tests {
             .arg(image));
         let bmap = fs::read_to_string(&bmap_path).expect("read bmap");
         assert!(unmapped_journal_blocks(image, &bmap) > 0);
+        let device = dir.path().join("device");
+        bmap_flash(image, &bmap, &device);
+        assert!(!journal_on_device_matches_image(image, &device));
 
         generate_bmap_file(image).expect("generate bmap");
         let bmap = fs::read_to_string(&bmap_path).expect("read bmap");
         assert_eq!(unmapped_journal_blocks(image, &bmap), 0);
+        bmap_flash(image, &bmap, &device);
+        assert!(journal_on_device_matches_image(image, &device));
 
         let offset = u64::from(PART_START_LBA) * SECTOR_SIZE;
         run(Command::new("e2fsck")
             .arg("-fn")
             .arg(format!("{image}?offset={offset}")));
+    }
+
+    #[test]
+    fn read_ext4_journal_rejects_invalid_block_size() {
+        let mut sb = [0u8; EXT4_SUPERBLOCK_SIZE];
+        let mut set = |o: usize, v: &[u8]| sb[o..o + v.len()].copy_from_slice(v);
+        set(EXT4_S_MAGIC, &EXT4_MAGIC.to_le_bytes());
+        set(
+            EXT4_S_FEATURE_COMPAT,
+            &EXT4_FEATURE_COMPAT_HAS_JOURNAL.to_le_bytes(),
+        );
+        set(EXT4_S_JOURNAL_INUM, &JOURNAL_INODE.to_le_bytes());
+        set(EXT4_S_LOG_BLOCK_SIZE, &INVALID_LOG_BLOCK_SIZE.to_le_bytes());
+
+        let image = tempfile::tempfile().expect("create image");
+        image
+            .write_all_at(&sb, EXT4_SUPERBLOCK_OFFSET)
+            .expect("write superblock");
+        assert!(read_ext4_journal(&image, 0).is_err());
+    }
+
+    #[test]
+    fn allocate_ext4_journals_skips_partition_past_image_end() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join("image.wic");
+        create_image_with_mbr(&image, u64::from(PART_START_LBA) * SECTOR_SIZE);
+
+        allocate_ext4_journals(image.to_str().expect("image path")).expect("allocate journals");
     }
 }
