@@ -5,7 +5,7 @@ use common::Testrunner;
 use httpmock::prelude::*;
 use omnect_cli::ssh;
 use predicates::prelude::*;
-use std::{fs::create_dir_all, path::PathBuf};
+use std::{fs::create_dir_all, os::unix::fs::MetadataExt, path::PathBuf};
 use stdext::function_name;
 
 #[test]
@@ -893,6 +893,58 @@ fn check_file_copy(tr: Testrunner, partition: &str) {
     assert_eq!(image_path_hash1, image_path_hash2);
     assert!(file_diff::diff(in_file3, out_file3));
     assert!(file_diff::diff(in_file4, out_file4));
+}
+
+// unit of `st_blocks`
+const STAT_BLOCK_SIZE: u64 = 512;
+
+fn bmap_value(bmap: &str, tag: &str) -> u64 {
+    // the header comment of a bmap file mentions the tags too; only the closing tag is unique
+    let open_tag = format!("<{tag}>");
+    let end = bmap
+        .find(&format!("</{tag}>"))
+        .expect("closing tag not found in bmap");
+    let start = bmap[..end]
+        .rfind(&open_tag)
+        .expect("opening tag not found in bmap")
+        + open_tag.len();
+    bmap[start..end]
+        .trim()
+        .parse()
+        .expect("tag value is no number")
+}
+
+#[test]
+fn check_file_copy_keeps_image_layout() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let bmap_path = PathBuf::from(format!("{}.bmap", image_path.to_string_lossy()));
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+
+    let meta = image_path.metadata().expect("image metadata");
+    assert!(
+        meta.blocks() * STAT_BLOCK_SIZE >= meta.len(),
+        "test image must be fully allocated"
+    );
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},factory:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .arg("-b")
+        .assert()
+        .success();
+
+    // zero blocks of the input must stay mapped, e.g. zeroed ext4 journals
+    let bmap = std::fs::read_to_string(&bmap_path).expect("read bmap");
+    assert_eq!(
+        bmap_value(&bmap, "MappedBlocksCount"),
+        bmap_value(&bmap, "BlocksCount")
+    );
 }
 
 #[test]

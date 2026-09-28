@@ -37,7 +37,6 @@ RUN <<EOT
         /usr/bin/dd \
         /usr/bin/e2cp \
         /usr/bin/e2mkdir \
-        /usr/bin/fallocate \
         /usr/bin/mcopy \
         /usr/bin/omnect-cli \
         /usr/bin/ssh-keygen \
