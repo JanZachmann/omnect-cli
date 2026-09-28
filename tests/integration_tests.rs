@@ -1051,6 +1051,9 @@ fn check_bmap_generation_wic_xz() {
         .assert();
     assert.success();
 
+    let bmap = std::fs::read_to_string(&image_path_bmap).expect("read bmap");
+    assert!(bmap_value(&bmap, "MappedBlocksCount") < bmap_value(&bmap, "BlocksCount"));
+
     // use bmaptool to verify that the checksum of the bmap file and the image
     // still match after the copy operations
     let assert = Command::new("bmaptool")
