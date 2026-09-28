@@ -114,7 +114,7 @@ where
                 .to_str()
                 .context("cannot get image file path")?
         ));
-        file::functions::generate_bmap_file(
+        file::bmap::generate_bmap_file(
             tmp_image_file
                 .to_str()
                 .context("cannot get image file path")?,
