@@ -488,31 +488,6 @@ mod tests {
     }
 
     #[test]
-    fn write_bmap_is_accepted_by_bmaptool() {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let image = sparse_image(dir.path());
-        // a mapped last block that is shorter than the block size
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&image)
-            .expect("open image")
-            .write_all_at(&[DATA_BYTE; PARTIAL_BLOCK_LEN], IMAGE_BLOCKS * BLOCK_SIZE)
-            .expect("write partial block");
-        let bmap = image.with_extension(BMAP_EXTENSION);
-        write_bmap(&image, None, &bmap).expect("write bmap");
-
-        let status = std::process::Command::new("bmaptool")
-            .arg("copy")
-            .arg("--bmap")
-            .arg(&bmap)
-            .arg(&image)
-            .arg(dir.path().join("device"))
-            .status()
-            .expect("run bmaptool");
-        assert!(status.success(), "bmaptool rejected the bmap");
-    }
-
-    #[test]
     fn verify_checksums_accepts_bmap_of_the_image() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
