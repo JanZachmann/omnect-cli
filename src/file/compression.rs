@@ -2,12 +2,14 @@ use crate::file::{IMAGE_BLOCK_SIZE, is_zero};
 use anyhow::{Context, Result};
 use filemagic::Magic;
 use log::debug;
-use std::env;
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::FileExt;
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{
+    env,
+    fs::File,
+    io::{Seek, SeekFrom, Write},
+    os::unix::fs::FileExt,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
@@ -108,11 +110,22 @@ impl Compression {
     }
 
     fn extension(&self) -> &'static str {
+        self.extensions()[0]
+    }
+
+    /// The first one is used for a compressed image that omnect-cli creates.
+    fn extensions(&self) -> &'static [&'static str] {
         match &self {
-            Compression::bzip2 => "bzip2",
-            Compression::gzip => "gzip",
-            Compression::xz { .. } => "xz",
+            Compression::bzip2 => &["bzip2", "bz2"],
+            Compression::gzip => &["gzip", "gz"],
+            Compression::xz { .. } => &["xz"],
         }
+    }
+
+    pub fn has_extension(path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| Compression::iter().any(|c| c.extensions().contains(&e)))
     }
 
     pub fn from_file(image_file_name: &PathBuf) -> Result<Option<Compression>> {
@@ -193,10 +206,18 @@ pub fn decompress(image_file_name: &PathBuf, compression: &Compression) -> Resul
 
     if new_image_file
         .extension()
-        .is_some_and(|ext| ext == compression.extension())
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| compression.extensions().contains(&ext))
     {
         new_image_file.set_extension("");
     }
+    // creating the destination would truncate the source
+    anyhow::ensure!(
+        new_image_file != *image_file_name,
+        "decompress: {} has no {:?} file extension",
+        image_file_name.display(),
+        compression.extensions()
+    );
 
     let mut destination = File::create(&new_image_file)?;
     let mut source = File::open(image_file_name)?;
@@ -223,8 +244,7 @@ pub fn compress(image_file_name: &PathBuf, compression: &Compression) -> Result<
 #[cfg(test)]
 mod tests {
     use crate::file::compression::*;
-    use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
+    use std::{fs, io::Read, os::unix::fs::MetadataExt};
 
     // unit of `st_blocks`
     const STAT_BLOCK_SIZE: u64 = 512;
@@ -338,5 +358,43 @@ mod tests {
                 "{compression:?}: truncated input accepted"
             );
         }
+    }
+
+    #[test]
+    fn decompress_file_strips_every_extension_of_the_compression() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = test_image();
+
+        for compression in all_compressions() {
+            for extension in compression.extensions() {
+                let path = dir.path().join(format!("image.wic.{extension}"));
+                let mut compressed = compress_image(&compression, &image);
+                fs::write(&path, read_all(&mut compressed)).expect("write compressed");
+
+                let decompressed = decompress(&path, &compression).expect("decompress");
+                assert_eq!(decompressed, dir.path().join("image.wic"));
+                assert!(
+                    fs::read(&decompressed).expect("read decompressed") == image,
+                    "{compression:?}: content of .{extension} differs"
+                );
+                assert!(Compression::has_extension(&path));
+            }
+        }
+    }
+
+    #[test]
+    fn decompress_file_rejects_unknown_extension() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let compression = Compression::gzip;
+        let path = dir.path().join("image.wic");
+        let mut compressed = compress_image(&compression, &test_image());
+        let content = read_all(&mut compressed);
+        fs::write(&path, &content).expect("write compressed");
+
+        assert!(decompress(&path, &compression).is_err());
+        assert!(
+            fs::read(&path).expect("read compressed") == content,
+            "source was changed"
+        );
     }
 }
