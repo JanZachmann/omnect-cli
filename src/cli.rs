@@ -34,12 +34,12 @@ pub enum Docker {
         /// destination path of the docker image in the firmware image (must end in ".tar.gz")
         #[clap(short = 'e', long = "dest")]
         dest: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -58,12 +58,12 @@ pub enum File {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -94,12 +94,12 @@ pub enum IdentityConfig {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -121,12 +121,12 @@ pub enum IdentityConfig {
         /// path to device identity certificate key file
         #[arg(short = 'k', long = "device_identity_key")]
         device_identity_key: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -142,12 +142,12 @@ pub enum IdentityConfig {
         /// path to root ca certificate file
         #[arg(short = 'r', long = "root_ca")]
         root_ca: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -169,12 +169,12 @@ pub enum IdentityConfig {
         /// period of validity in days
         #[arg(short = 'D', long = "days")]
         days: u32,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -190,12 +190,12 @@ pub enum IdentityConfig {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -217,12 +217,12 @@ pub enum IdentityConfig {
         /// period of validity in days
         #[arg(short = 'D', long = "days")]
         days: u32,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -241,12 +241,12 @@ pub enum IotHubDeviceUpdate {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -363,12 +363,12 @@ pub enum SshConfig {
         /// path to public key of the ssh root ca
         #[arg(short = 'r', long = "root_ca")]
         root_ca: PathBuf,
-        /// optional: generate bmap file (currently not working in docker image)
-        #[arg(short = 'b', long = "generate-bmap-file")]
-        generate_bmap: bool,
+        /// optional: create a bmap of the output image (currently not working in docker image)
+        #[arg(short = 'b', long = "output-bmap")]
+        output_bmap: bool,
         /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "bmap")]
-        bmap: Option<PathBuf>,
+        #[arg(long = "input-bmap")]
+        input_bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,

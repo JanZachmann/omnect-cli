@@ -986,7 +986,7 @@ fn check_file_copy_keeps_holes() {
         .arg(format!("{},factory:/my-file", in_file.to_string_lossy()))
         .arg("-i")
         .arg(&sparse_path)
-        .arg("--bmap")
+        .arg("--input-bmap")
         .arg(&input_bmap_path)
         .arg("-b")
         .assert()
