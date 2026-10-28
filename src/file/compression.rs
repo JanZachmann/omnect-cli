@@ -397,4 +397,23 @@ mod tests {
             "source was changed"
         );
     }
+
+    #[test]
+    fn compress_fails_when_the_trailer_cannot_be_written() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // an empty source makes `finish` the first write to the destination
+        let source = dir.path().join("empty.wic");
+        fs::write(&source, []).expect("write source");
+        for compression in all_compressions() {
+            let mut source = fs::File::open(&source).expect("open source");
+            let mut full = fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .expect("open /dev/full");
+            assert!(
+                compression.compress(&mut source, &mut full).is_err(),
+                "{compression:?}: write error was ignored"
+            );
+        }
+    }
 }

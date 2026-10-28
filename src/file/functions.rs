@@ -562,6 +562,26 @@ mod tests {
     }
 
     #[test]
+    fn read_partition_fails_for_partition_past_the_image_end() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join("image.wic");
+        let partition = dir.path().join("partition.img");
+        fs::File::create(&image)
+            .expect("create image")
+            .set_len((PART_START + PART_SECTORS - 1) * SECTOR_SIZE)
+            .expect("set image size");
+
+        assert!(
+            read_partition(
+                image.to_str().expect("image path"),
+                partition.to_str().expect("partition path"),
+                &partition_info(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn write_partition_writes_block_changed_to_zeros() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = dir.path().join("image.wic");
