@@ -459,11 +459,49 @@ fn write_partition(
     // image too, else a bmap flash keeps the old content there.
     let partition_data = sparse::data_ranges(&partition, 0, len)?;
     let image_data = sparse::data_ranges(&image, image_offset, image_offset + len)?;
+    // a block that is a hole in both files is zero in both, so it never needs a write
+    let block_size = IMAGE_BLOCK_SIZE as u64;
+    let spans = sparse::merge(
+        partition_data
+            .iter()
+            .cloned()
+            .chain(
+                image_data
+                    .iter()
+                    .map(|r| r.start - image_offset..r.end - image_offset),
+            )
+            .map(|r| r.start / block_size * block_size..r.end.next_multiple_of(block_size).min(len))
+            .collect(),
+    );
     let mut src = vec![0u8; COPY_CHUNK_SIZE];
     let mut dst = vec![0u8; COPY_CHUNK_SIZE];
-    let mut pos = 0;
-    while pos < len {
-        let n = usize::try_from((len - pos).min(COPY_CHUNK_SIZE as u64))?;
+    for span in spans {
+        write_changed_blocks(
+            &partition,
+            &image,
+            image_offset,
+            span,
+            (&partition_data, &image_data),
+            (&mut src, &mut dst),
+        )?;
+    }
+
+    image
+        .sync_all()
+        .context("write_partition: cannot sync image")
+}
+
+fn write_changed_blocks(
+    partition: &fs::File,
+    image: &fs::File,
+    image_offset: u64,
+    span: Range<u64>,
+    (partition_data, image_data): (&[Range<u64>], &[Range<u64>]),
+    (src, dst): (&mut [u8], &mut [u8]),
+) -> Result<()> {
+    let mut pos = span.start;
+    while pos < span.end {
+        let n = usize::try_from((span.end - pos).min(COPY_CHUNK_SIZE as u64))?;
         partition
             .read_exact_at(&mut src[..n], pos)
             .context("write_partition: cannot read partition file")?;
@@ -478,8 +516,7 @@ fn write_partition(
             let block_pos = pos + (i * IMAGE_BLOCK_SIZE) as u64;
             let block = block_pos..block_pos + s.len() as u64;
             let image_block = image_offset + block.start..image_offset + block.end;
-            if s != d || (has_data(&partition_data, &block) && has_hole(&image_data, &image_block))
-            {
+            if s != d || (has_data(partition_data, &block) && has_hole(image_data, &image_block)) {
                 image
                     .write_all_at(s, image_block.start)
                     .context("write_partition: cannot write image")?;
@@ -488,9 +525,7 @@ fn write_partition(
         pos += n as u64;
     }
 
-    image
-        .sync_all()
-        .context("write_partition: cannot sync image")
+    Ok(())
 }
 
 fn has_data(data_ranges: &[Range<u64>], block: &Range<u64>) -> bool {
@@ -515,6 +550,8 @@ mod tests {
     const PART_SECTORS: u64 = 64;
     const OLD_CONTENT_BYTE: u8 = 0xa5;
     const ZEROED_BLOCK: usize = 2;
+    // the first partition of an old MBR layout
+    const UNALIGNED_PART_START: u64 = 63;
 
     fn partition_info() -> PartitionInfo {
         PartitionInfo {
@@ -572,6 +609,43 @@ mod tests {
         .expect("write partition");
 
         assert_eq!(allocated(), before, "unchanged zero blocks were written");
+    }
+
+    #[test]
+    fn write_partition_maps_zero_block_of_an_unaligned_partition() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join("image.wic");
+        let partition = dir.path().join("partition.img");
+        let info = PartitionInfo {
+            num: PART_NUM,
+            start: UNALIGNED_PART_START,
+            count: PART_SECTORS,
+        };
+        let image_file = fs::File::create(&image).expect("create image");
+        image_file
+            .set_len((UNALIGNED_PART_START + PART_SECTORS) * SECTOR_SIZE)
+            .expect("set image size");
+        let partition_file = fs::File::create(&partition).expect("create partition");
+        partition_file
+            .set_len(PART_SECTORS * SECTOR_SIZE)
+            .expect("set partition size");
+        let block = (ZEROED_BLOCK * IMAGE_BLOCK_SIZE) as u64;
+        partition_file
+            .write_all_at(&[0; IMAGE_BLOCK_SIZE], block)
+            .expect("write zero block");
+
+        write_partition(
+            image.to_str().expect("image path"),
+            partition.to_str().expect("partition path"),
+            &info,
+        )
+        .expect("write partition");
+
+        let block = UNALIGNED_PART_START * SECTOR_SIZE + block;
+        let block = block..block + IMAGE_BLOCK_SIZE as u64;
+        let image_data =
+            sparse::data_ranges(&image_file, block.start, block.end).expect("data ranges");
+        assert_eq!(image_data, vec![block], "zero block is still a hole");
     }
 
     #[test]
