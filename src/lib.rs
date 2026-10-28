@@ -123,7 +123,8 @@ where
         None => {}
         Some(Some((path, bmap))) => {
             info!("keeping the ranges of {} mapped", path.display());
-            file::bmap::allocate_ranges(&tmp_image_file, &bmap)
+            file::bmap::verify_checksums(&tmp_image_file, &bmap)
+                .and_then(|_| file::bmap::allocate_ranges(&tmp_image_file, &bmap))
                 .context(format!("cannot use input bmap {}", path.display()))?;
         }
         Some(None) => {

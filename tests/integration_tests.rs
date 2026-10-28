@@ -1117,6 +1117,35 @@ fn check_input_bmap_of_another_image() {
 }
 
 #[test]
+fn check_input_bmap_of_another_image_with_the_same_size() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let bmap_path = tr.to_pathbuf("testfiles/image.wic.bmap");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    let bmap = read_bmap(&bmap_path);
+    // another build: one byte differs in a block the bmap maps
+    let mapped_byte = usize::try_from(bmap.ranges[0].start() * bmap.block_size).expect("offset");
+    let mut image = fs::read(&image_path).expect("read image");
+    image[mapped_byte] = !image[mapped_byte];
+    fs::write(&image_path, image).expect("write image");
+    let image_hash = Testrunner::file_hash(&image_path);
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot use input bmap"))
+        .stderr(predicate::str::contains("--input-bmap"));
+    assert_eq!(Testrunner::file_hash(&image_path), image_hash);
+}
+
+#[test]
 fn check_bmap_generation_wic() {
     let tr = Testrunner::new(function_name!().split("::").last().unwrap());
     let image_path = tr.to_pathbuf("testfiles/image.wic");
