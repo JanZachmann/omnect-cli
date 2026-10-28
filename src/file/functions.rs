@@ -488,9 +488,7 @@ fn write_partition(
         )?;
     }
 
-    image
-        .sync_all()
-        .context("write_partition: cannot sync image")
+    Ok(())
 }
 
 fn write_changed_blocks(
