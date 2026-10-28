@@ -3,9 +3,6 @@ pub mod compression;
 pub mod functions;
 mod partition;
 
-/// Granularity at which zero data in an image file is kept as a hole.
-const IMAGE_BLOCK_SIZE: usize = 4096;
-const COPY_CHUNK_SIZE: usize = 1024 * 1024;
 use super::validators::{
     device_update,
     identity::{IdentityConfig, IdentityType, validate_identity},
@@ -19,6 +16,14 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+/// Granularity at which zero data in an image file is kept as a hole.
+const IMAGE_BLOCK_SIZE: usize = 4096;
+const COPY_CHUNK_SIZE: usize = 1024 * 1024;
+
+fn is_zero(data: &[u8]) -> bool {
+    data.iter().all(|b| *b == 0)
+}
 
 pub fn set_iotedge_gateway_config(
     config_file: &Path,

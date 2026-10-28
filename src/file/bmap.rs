@@ -1,4 +1,4 @@
-use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, is_zero};
 use anyhow::{Context, Result};
 use std::{
     fs,
@@ -137,14 +137,18 @@ pub fn allocate_ranges(image_file: &Path, bmap: &Bmap) -> Result<()> {
     );
 
     let image_blocks = image_len.div_ceil(bmap.block_size);
+    let image_block_size = IMAGE_BLOCK_SIZE as u64;
     let mut buf = vec![0u8; COPY_CHUNK_SIZE];
     for range in &bmap.ranges {
         anyhow::ensure!(
             *range.end() < image_blocks,
             "allocate_ranges: range {range:?} is outside the image"
         );
-        let start = range.start() * bmap.block_size;
-        let end = ((range.end() + 1) * bmap.block_size).min(image_len);
+        // check whole image blocks, also when the bmap uses a smaller block size
+        let start = range.start() * bmap.block_size / image_block_size * image_block_size;
+        let end = ((range.end() + 1) * bmap.block_size)
+            .next_multiple_of(image_block_size)
+            .min(image_len);
 
         let mut pos = start;
         while pos < end {
@@ -158,13 +162,10 @@ pub fn allocate_ranges(image_file: &Path, bmap: &Bmap) -> Result<()> {
         }
     }
 
-    image
-        .sync_all()
-        .context("allocate_ranges: cannot sync image")
+    Ok(())
 }
 
 fn write_zero_blocks(image: &fs::File, chunk: &[u8], pos: u64) -> Result<()> {
-    let is_zero = |b: &[u8]| b.iter().all(|x| *x == 0);
     let blocks: Vec<(u64, &[u8])> = if is_zero(chunk) {
         vec![(pos, chunk)]
     } else {
@@ -207,6 +208,7 @@ mod tests {
     const DATA_BLOCK: u64 = 0;
     const ZERO_BLOCKS: RangeInclusive<u64> = 2..=3;
     const UNMAPPED_BLOCK: u64 = 5;
+    const SMALL_BLOCK_SIZE: u64 = 512;
     const DATA_BYTE: u8 = 0x5a;
     // content an earlier installation left on the device
     const OLD_CONTENT_BYTE: u8 = 0xa5;
@@ -374,6 +376,22 @@ mod tests {
         allocate_ranges(&image, &Bmap::whole_image(IMAGE_BLOCKS * BLOCK_SIZE))
             .expect("allocate ranges");
         assert_eq!(created_bmap(&image).ranges, vec![0..=IMAGE_BLOCKS - 1]);
+    }
+
+    #[test]
+    fn allocate_ranges_maps_whole_blocks_for_a_smaller_bmap_block_size() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = sparse_image(dir.path());
+        // starts in DATA_BLOCK and ends in the hole after it
+        let first = (DATA_BLOCK + 1) * BLOCK_SIZE / SMALL_BLOCK_SIZE - 1;
+        let input = Bmap {
+            block_size: SMALL_BLOCK_SIZE,
+            image_size: IMAGE_BLOCKS * BLOCK_SIZE,
+            ranges: vec![RangeInclusive::new(first, first + 2)],
+        };
+
+        allocate_ranges(&image, &input).expect("allocate ranges");
+        assert!(is_mapped(&created_bmap(&image), DATA_BLOCK + 1));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use httpmock::prelude::*;
 use omnect_cli::{file::bmap::Bmap, ssh};
 use predicates::prelude::*;
 use std::{
-    fs::create_dir_all,
+    fs::{self, create_dir_all},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
@@ -901,6 +901,10 @@ fn check_file_copy(tr: Testrunner, partition: &str) {
 
 // unit of `st_blocks`
 const STAT_BLOCK_SIZE: u64 = 512;
+// content an earlier installation left on the device
+const OLD_CONTENT_BYTE: u8 = 0xa5;
+const OTHER_IMAGE_BMAP: &str = "<bmap><ImageSize>4096</ImageSize><BlockSize>4096</BlockSize>\
+                                <BlockMap><Range>0</Range></BlockMap></bmap>";
 
 fn read_bmap(path: &Path) -> Bmap {
     Bmap::read(path).expect("read bmap")
@@ -922,18 +926,25 @@ fn maps_all_ranges_of(bmap: &Bmap, input: &Bmap) -> bool {
         .all(|b| bmap.ranges.iter().any(|r| r.contains(&b)))
 }
 
+/// Writes the blocks `bmap` maps onto a device that still holds old content, as a bmap flash
+/// does.
+fn bmap_flash(image: &[u8], bmap: &Bmap) -> Vec<u8> {
+    let mut device = vec![OLD_CONTENT_BYTE; image.len()];
+    for range in &bmap.ranges {
+        let start = usize::try_from(range.start() * bmap.block_size).expect("start");
+        let end = usize::try_from((range.end() + 1) * bmap.block_size).expect("end");
+        let end = end.min(image.len());
+        device[start..end].copy_from_slice(&image[start..end]);
+    }
+    device
+}
+
 #[test]
-fn check_file_copy_keeps_image_layout() {
+fn check_file_copy_without_input_bmap_maps_whole_image() {
     let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
     let image_path = tr.to_pathbuf("testfiles/image.wic");
     let bmap_path = PathBuf::from(format!("{}.bmap", image_path.to_string_lossy()));
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
-
-    let meta = image_path.metadata().expect("image metadata");
-    assert!(
-        meta.blocks() * STAT_BLOCK_SIZE >= meta.len(),
-        "test image must be fully allocated"
-    );
 
     Command::cargo_bin("omnect-cli")
         .expect("omnect-cli binary")
@@ -984,8 +995,59 @@ fn check_file_copy_keeps_holes() {
     let meta = sparse_path.metadata().expect("image metadata");
     assert!(meta.blocks() * STAT_BLOCK_SIZE < meta.len());
     let bmap = read_bmap(&bmap_path);
+    let input_bmap = read_bmap(&input_bmap_path);
     assert!(!maps_whole_image(&bmap));
-    assert!(maps_all_ranges_of(&bmap, &read_bmap(&input_bmap_path)));
+    assert!(maps_all_ranges_of(&bmap, &input_bmap));
+
+    // every data block and every block of the input bmap must replace the old content
+    let image = fs::read(&sparse_path).expect("read image");
+    let device = bmap_flash(&image, &bmap);
+    let block_size = usize::try_from(input_bmap.block_size).expect("block size");
+    let blocks = image.chunks(block_size).zip(device.chunks(block_size));
+    for (block, (image_block, device_block)) in (0u64..).zip(blocks) {
+        let needed = image_block.iter().any(|b| *b != 0)
+            || input_bmap.ranges.iter().any(|r| r.contains(&block));
+        assert!(
+            !needed || image_block == device_block,
+            "block {block} keeps old content"
+        );
+    }
+}
+
+#[test]
+fn check_input_bmap_of_another_image() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let bmap_path = PathBuf::from(format!("{}.bmap", image_path.to_string_lossy()));
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    let out_file = tr.pathbuf().join("hosts");
+    fs::write(&bmap_path, OTHER_IMAGE_BMAP).expect("write bmap");
+    let image_hash = Testrunner::file_hash(&image_path);
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot use input bmap"));
+    assert_eq!(Testrunner::file_hash(&image_path), image_hash);
+
+    // reading from the image does not use the bmap
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-from-image")
+        .arg("-f")
+        .arg(format!("rootA:/etc/hosts,{}", out_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .assert()
+        .success();
 }
 
 #[test]
@@ -1042,7 +1104,8 @@ fn check_bmap_generation_wic_xz() {
     let image_path_wic_xz = tr.to_pathbuf("testfiles/image.wic.xz");
     let image_path_wic = image_path_wic_xz.with_extension("");
     let image_path_wic_copy = image_path_wic_xz.with_extension("copy");
-    // the Yocto bmap; omnect-cli replaces it with the one it creates
+    // a Yocto bmap of an image with the same layout; omnect-cli replaces it with the one it
+    // creates
     let image_path_bmap = tr.to_pathbuf("testfiles/image.wic.bmap");
     let input_bmap = read_bmap(&image_path_bmap);
     let in_file = tr.to_pathbuf("testfiles/boot.scr");

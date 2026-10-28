@@ -485,12 +485,21 @@ fn write_partition(
 #[cfg(test)]
 mod tests {
     use crate::file::functions::*;
+    use std::os::unix::fs::MetadataExt;
 
     const PART_NUM: u32 = 1;
     const PART_START: u64 = 8;
     const PART_SECTORS: u64 = 64;
     const OLD_CONTENT_BYTE: u8 = 0xa5;
     const ZEROED_BLOCK: usize = 2;
+
+    fn partition_info() -> PartitionInfo {
+        PartitionInfo {
+            num: PART_NUM,
+            start: PART_START,
+            count: PART_SECTORS,
+        }
+    }
 
     #[test]
     fn write_partition_writes_block_changed_to_zeros() {
@@ -508,15 +517,37 @@ mod tests {
         write_partition(
             image.to_str().expect("image path"),
             partition.to_str().expect("partition path"),
-            &PartitionInfo {
-                num: PART_NUM,
-                start: PART_START,
-                count: PART_SECTORS,
-            },
+            &partition_info(),
         )
         .expect("write partition");
 
         let written = fs::read(&image).expect("read image");
         assert!(written[part_offset..] == content[..], "partition differs");
+    }
+
+    #[test]
+    fn write_partition_keeps_holes_of_unchanged_blocks() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join("image.wic");
+        let partition = dir.path().join("partition.img");
+        fs::File::create(&image)
+            .expect("create image")
+            .set_len((PART_START + PART_SECTORS) * SECTOR_SIZE)
+            .expect("set image size");
+        fs::File::create(&partition)
+            .expect("create partition")
+            .set_len(PART_SECTORS * SECTOR_SIZE)
+            .expect("set partition size");
+        let allocated = || fs::metadata(&image).expect("image metadata").blocks();
+        let before = allocated();
+
+        write_partition(
+            image.to_str().expect("image path"),
+            partition.to_str().expect("partition path"),
+            &partition_info(),
+        )
+        .expect("write partition");
+
+        assert_eq!(allocated(), before, "unchanged zero blocks were written");
     }
 }

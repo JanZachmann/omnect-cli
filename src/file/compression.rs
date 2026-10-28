@@ -1,4 +1,4 @@
-use crate::file::IMAGE_BLOCK_SIZE;
+use crate::file::{IMAGE_BLOCK_SIZE, is_zero};
 use anyhow::{Context, Result};
 use filemagic::Magic;
 use log::debug;
@@ -49,15 +49,17 @@ impl Compression {
         source: &mut std::fs::File,
         destination: &mut std::fs::File,
     ) -> std::io::Result<u64> {
-        let mut enc: Box<dyn std::io::Write> = match &self {
-            Compression::bzip2 => Box::new(bzip2::write::BzEncoder::new(
-                destination,
-                bzip2::Compression::best(),
-            )),
-            Compression::gzip => Box::new(flate2::write::GzEncoder::new(
-                destination,
-                flate2::Compression::best(),
-            )),
+        // only `finish` reports an error while writing the trailer
+        let (bytes_read, _) = match &self {
+            Compression::bzip2 => {
+                let mut enc = bzip2::write::BzEncoder::new(destination, bzip2::Compression::best());
+                (std::io::copy(source, &mut enc)?, enc.finish()?)
+            }
+            Compression::gzip => {
+                let mut enc =
+                    flate2::write::GzEncoder::new(destination, flate2::Compression::best());
+                (std::io::copy(source, &mut enc)?, enc.finish()?)
+            }
             Compression::xz {
                 compression_level: level,
             } => {
@@ -65,13 +67,11 @@ impl Compression {
                     .threads(num_cpus::get() as u32)
                     .preset(*level)
                     .encoder()?;
-                Box::new(xz2::write::XzEncoder::new_stream(destination, stream))
+                let mut enc = xz2::write::XzEncoder::new_stream(destination, stream);
+                (std::io::copy(source, &mut enc)?, enc.finish()?)
             }
         };
-
-        let bytes_written = std::io::copy(source, &mut enc)?;
-        enc.flush()?;
-        Ok(bytes_written)
+        Ok(bytes_read)
     }
 
     pub fn decompress(
@@ -161,7 +161,6 @@ impl<'a> SparseWriter<'a> {
 
 impl Write for SparseWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let is_zero = |b: &[u8]| b.iter().all(|x| *x == 0);
         let block_offset = (self.pos % IMAGE_BLOCK_SIZE as u64) as usize;
 
         // one call handles a run of blocks that are all zero or all data

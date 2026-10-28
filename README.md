@@ -186,7 +186,9 @@ omnect-cli file copy-to-image --help
 
 ## bmap files
 
-Commands that change an image create a bmap file with `-b`. The bmap of the input image is the base for it: `omnect-cli` takes `<image>.bmap` or the bmap of the uncompressed image next to the image, e.g. `my-image.wic.bmap` for `my-image.wic.xz` as the Yocto build creates it, or the file given with `--bmap`. Every range the input bmap maps stays mapped, also when it holds only zeros, so a bmap-based flash overwrites what an earlier installation left there (partition table entries, FAT, ext4 journals). The created bmap maps these ranges plus the blocks `omnect-cli` changed.
+Commands that change an image create a bmap file with `-b`. It is written next to the image as `<uncompressed image>.bmap`, e.g. `my-image.wic.bmap` for `my-image.wic.xz`, and replaces a file with this name.
+
+The bmap of the input image is the base for it: `omnect-cli` takes the file given with `--bmap`, else `<image>.bmap` or the bmap of the uncompressed image next to the image, e.g. `my-image.wic.bmap` for `my-image.wic.xz` as the Yocto build creates it. The input bmap must have the size of the image, otherwise the command fails. Every range the input bmap maps stays mapped, also when it holds only zeros, so a bmap-based flash overwrites what an earlier installation left there (partition table entries, FAT, ext4 journals). The created bmap maps these ranges, the blocks `omnect-cli` changed, and all other blocks that the image file stores as data. For an uncompressed image file that is not sparse, this is the whole image.
 
 Without an input bmap, the created bmap maps the whole image, and a flash writes every block.
 

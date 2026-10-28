@@ -22,7 +22,11 @@ use cli::{
 };
 use file::{bmap::Bmap, compression::Compression, functions::FileCopyToParams};
 use log::{error, info};
-use std::{fs, io::Read, path::Path, path::PathBuf};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 use tokio::fs::remove_dir_all;
 use uuid::Uuid;
 
@@ -48,9 +52,17 @@ impl Drop for TempDirGuard {
     }
 }
 
+/// What an image command does with the holes and mapped blocks of the image.
+enum Layout {
+    /// The command does not change the image.
+    Unchanged,
+    /// Keep the ranges of this bmap, or of the one found next to the image, mapped.
+    Keep(Option<PathBuf>),
+}
+
 fn run_image_command<F>(
     image_file: PathBuf,
-    input_bmap: Option<PathBuf>,
+    layout: Layout,
     generate_bmap: bool,
     target_compression: Option<Compression>,
     command: F,
@@ -71,7 +83,14 @@ where
         image_file.to_str().context("cannot get image file path")?
     );
 
-    let input_bmap = file::bmap::find_input_bmap(&image_file, input_bmap.as_deref())?;
+    let input_bmap = match layout {
+        Layout::Unchanged => None,
+        Layout::Keep(explicit) => Some(
+            file::bmap::find_input_bmap(&image_file, explicit.as_deref())?
+                .map(|path| Bmap::read(&path).map(|bmap| (path, bmap)))
+                .transpose()?,
+        ),
+    };
     let mut dest_image_file = image_file.clone();
 
     // create /tmp/{uuid}/ and copy image into
@@ -101,21 +120,21 @@ where
         ))?;
     }
 
-    let bmap = match input_bmap {
-        Some(path) => {
-            info!("keep the ranges of {} mapped", path.display());
-            Bmap::read(&path)?
+    match input_bmap {
+        None => {}
+        Some(Some((path, bmap))) => {
+            info!("keeping the ranges of {} mapped", path.display());
+            file::bmap::allocate_ranges(&tmp_image_file, &bmap)
+                .context(format!("cannot use input bmap {}", path.display()))?;
         }
-        None => {
-            info!("no input bmap found: every block of the image gets mapped");
-            Bmap::whole_image(
-                fs::metadata(&tmp_image_file)
-                    .context("run_image_command: cannot get image size")?
-                    .len(),
-            )
+        Some(None) => {
+            info!("no input bmap found, so every block of the image is allocated");
+            let image_size = fs::metadata(&tmp_image_file)
+                .context("run_image_command: cannot get image size")?
+                .len();
+            file::bmap::allocate_ranges(&tmp_image_file, &Bmap::whole_image(image_size))?;
         }
-    };
-    file::bmap::allocate_ranges(&tmp_image_file, &bmap)?;
+    }
 
     // run command
     command(&tmp_image_file)?;
@@ -236,6 +255,8 @@ fn create_image_cert(image: &Path, cert_opts: CertificateOptions) -> Result<Cert
 }
 
 pub fn run() -> Result<()> {
+    use Layout::{Keep, Unchanged};
+
     match cli::from_args() {
         Command::Docker(Inject {
             docker_image,
@@ -245,7 +266,7 @@ pub fn run() -> Result<()> {
             generate_bmap,
             bmap,
             compress_image,
-        }) => run_image_command(image, bmap, generate_bmap, compress_image, |img| {
+        }) => run_image_command(image, Keep(bmap), generate_bmap, compress_image, |img| {
             anyhow::ensure!(
                 dest.to_string_lossy().ends_with(".tar.gz"),
                 format!(
@@ -286,7 +307,7 @@ pub fn run() -> Result<()> {
             generate_bmap,
             bmap,
             compress_image,
-        }) => run_image_command(image, bmap, generate_bmap, compress_image, |img| {
+        }) => run_image_command(image, Keep(bmap), generate_bmap, compress_image, |img| {
             file::set_identity_config(&config, img, payload.as_deref())
         })?,
         Command::Identity(SetDeviceCertificate {
@@ -312,7 +333,7 @@ pub fn run() -> Result<()> {
             )
             .context("set_device_certificate: could not create certificate")?;
 
-            run_image_command(image, bmap, generate_bmap, compress_image, |img| {
+            run_image_command(image, Keep(bmap), generate_bmap, compress_image, |img| {
                 file::set_device_cert(
                     Some(&intermediate_full_chain_cert),
                     &cert_info.cert_path,
@@ -344,7 +365,7 @@ pub fn run() -> Result<()> {
             )
             .context("set_edge_ca_certificate: could not create certificate")?;
 
-            run_image_command(image, bmap, generate_bmap, compress_image, |img| {
+            run_image_command(image, Keep(bmap), generate_bmap, compress_image, |img| {
                 file::set_edge_ca_cert(
                     Some(&intermediate_full_chain_cert),
                     &cert_info.cert_path,
@@ -360,7 +381,7 @@ pub fn run() -> Result<()> {
             generate_bmap,
             bmap,
             compress_image,
-        }) => run_image_command(image, bmap, generate_bmap, compress_image, |img| {
+        }) => run_image_command(image, Keep(bmap), generate_bmap, compress_image, |img| {
             file::set_device_cert(None, &device_cert_pem, &device_key_pem, img)
         })?,
         Command::Identity(SetIotedgeGatewayConfig {
@@ -374,7 +395,7 @@ pub fn run() -> Result<()> {
             compress_image,
         }) => run_image_command(
             image,
-            bmap,
+            Keep(bmap),
             generate_bmap,
             compress_image,
             |img: &PathBuf| {
@@ -396,7 +417,7 @@ pub fn run() -> Result<()> {
             compress_image,
         }) => run_image_command(
             image,
-            bmap,
+            Keep(bmap),
             generate_bmap,
             compress_image,
             |img: &PathBuf| file::set_iot_leaf_sas_config(&config, img, &root_ca),
@@ -409,7 +430,7 @@ pub fn run() -> Result<()> {
             compress_image,
         }) => run_image_command(
             image,
-            bmap,
+            Keep(bmap),
             generate_bmap,
             compress_image,
             |img: &PathBuf| file::set_ssh_tunnel_certificate(img, &root_ca),
@@ -422,7 +443,7 @@ pub fn run() -> Result<()> {
             compress_image,
         }) => run_image_command(
             image,
-            bmap,
+            Keep(bmap),
             generate_bmap,
             compress_image,
             |img: &PathBuf| {
@@ -546,7 +567,7 @@ pub fn run() -> Result<()> {
             compress_image,
         }) => run_image_command(
             image,
-            bmap,
+            Keep(bmap),
             generate_bmap,
             compress_image,
             |img: &PathBuf| file::copy_to_image(&file_copy_params, img),
@@ -554,7 +575,7 @@ pub fn run() -> Result<()> {
         Command::File(CopyFromImage {
             file_copy_params,
             image,
-        }) => run_image_command(image, None, false, None, |img: &PathBuf| {
+        }) => run_image_command(image, Unchanged, false, None, |img: &PathBuf| {
             file::copy_from_image(&file_copy_params, img)
         })?,
     }
