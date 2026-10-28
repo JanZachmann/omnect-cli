@@ -140,9 +140,9 @@ pub fn verify_checksums(image_file: &Path, bmap: &Bmap) -> Result<()> {
         let actual = range_sha256(&image, bytes, &mut buf)?;
         anyhow::ensure!(
             actual.eq_ignore_ascii_case(expected.trim()),
-            "verify_checksums: range {range:?} of the image does not match the bmap. It is the \
-             bmap of another image, or of this image before a command without -b changed it. \
-             Pass the right bmap with --input-bmap."
+            "verify_checksums: range {range:?} of the image does not match the bmap, so it is the \
+             bmap of another image or of an older version of this image. Pass the right bmap \
+             with --input-bmap."
         );
     }
 

@@ -1255,7 +1255,7 @@ fn check_chained_commands_with_input_bmap() {
     copy_to_image(&image_xz_path, false).success();
     copy_to_image(&image_path, true)
         .failure()
-        .stderr(predicate::str::contains("without -b changed it"));
+        .stderr(predicate::str::contains("older version of this image"));
 
     copy_to_image(&image_xz_path, true).success();
     copy_to_image(&image_path, true).success();
@@ -1368,6 +1368,44 @@ fn check_bmap_generation_wic_xz_without_input_bmap() {
         .success();
 
     assert!(maps_whole_image(&read_bmap(&image_path_bmap)));
+}
+
+#[test]
+fn check_bmap_of_compressed_output_keeps_input_bmap() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let input_bmap_path = tr.to_pathbuf("testfiles/image.wic.bmap");
+    let input_bmap_hash = Testrunner::file_hash(&input_bmap_path);
+    let image_path_xz = image_path.with_extension("wic.xz");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .arg("-b")
+        .arg("-p")
+        .arg("xz")
+        .assert()
+        .success();
+
+    assert_eq!(
+        Testrunner::file_hash(&input_bmap_path),
+        input_bmap_hash,
+        "bmap of the unchanged input image was replaced"
+    );
+    // bmaptool finds <image>.bmap without --bmap and checks the image against it
+    Command::new("bmaptool")
+        .arg("copy")
+        .arg(&image_path_xz)
+        .arg(image_path.with_extension("copy"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("image.wic.xz.bmap"));
 }
 
 #[test]

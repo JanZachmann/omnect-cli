@@ -150,10 +150,7 @@ where
 
     // copy the bmap last, so it never describes an image that was not written back
     if output_bmap {
-        let target_bmap = image_file
-            .parent()
-            .context("cannot get parent dir of image path")?
-            .join(tmp_bmap.file_name().context("cannot get bmap file name")?);
+        let target_bmap = bmap::bmap_path(&dest_image_file);
         std::fs::copy(&tmp_bmap, &target_bmap).context(format!(
             "error: std::fs::copy({:?}, {:?})",
             tmp_bmap, target_bmap
