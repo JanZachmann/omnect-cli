@@ -1098,6 +1098,7 @@ fn check_input_bmap_of_another_image() {
         .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
         .arg("-i")
         .arg(&image_path)
+        .arg("-b")
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot use input bmap"));
@@ -1114,6 +1115,66 @@ fn check_input_bmap_of_another_image() {
         .arg(&image_path)
         .assert()
         .success();
+}
+
+#[test]
+fn check_file_copy_without_output_bmap_keeps_image_sparse() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let sparse_path = image_path.with_file_name("sparse.wic");
+    let bmap_path = PathBuf::from(format!("{}.bmap", sparse_path.to_string_lossy()));
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    sparse_copy(&image_path, &sparse_path);
+    // without -b, a bmap next to the image is not used
+    fs::write(&bmap_path, OTHER_IMAGE_BMAP).expect("write bmap");
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},factory:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&sparse_path)
+        .assert()
+        .success();
+
+    let meta = sparse_path.metadata().expect("image metadata");
+    assert!(
+        meta.blocks() * STAT_BLOCK_SIZE < meta.len(),
+        "image is not sparse"
+    );
+    assert_eq!(
+        fs::read_to_string(&bmap_path).expect("read bmap"),
+        OTHER_IMAGE_BMAP
+    );
+}
+
+#[test]
+fn check_no_output_bmap_when_image_write_back_fails() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let bmap_path = PathBuf::from(format!("{}.bmap", image_path.to_string_lossy()));
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    let mut permissions = image_path.metadata().expect("image metadata").permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&image_path, permissions).expect("make image read-only");
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .arg("-b")
+        .assert()
+        .failure();
+    assert!(
+        !bmap_path.exists(),
+        "bmap written for an image that was not written back"
+    );
 }
 
 #[test]
@@ -1138,6 +1199,7 @@ fn check_input_bmap_of_another_image_with_the_same_size() {
         .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
         .arg("-i")
         .arg(&image_path)
+        .arg("-b")
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot use input bmap"))

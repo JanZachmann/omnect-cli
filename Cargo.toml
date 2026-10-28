@@ -82,5 +82,5 @@ tar = "0.4"
 
 # metadata for building with cargo-deb (https://crates.io/crates/cargo-deb)
 [package.metadata.deb]
-depends = "bmap-tools, e2tools, keychain, libc6 (>= 2.39), libmagic1, libssl3 (>= 3.0.0), mtools"
+depends = "e2tools, keychain, libc6 (>= 2.39), libmagic1, libssl3 (>= 3.0.0), mtools"
 revision = ""

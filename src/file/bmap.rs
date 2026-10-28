@@ -1,17 +1,18 @@
-use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, is_zero};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, sparse};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    ops::RangeInclusive,
+    ops::{Range, RangeInclusive},
     os::unix::fs::FileExt,
     path::{Path, PathBuf},
-    process::Command,
 };
 
-const BMAP_EXTENSION: &str = "bmap";
+pub const BMAP_EXTENSION: &str = "bmap";
 const COMPRESSION_EXTENSIONS: [&str; 5] = ["xz", "gz", "gzip", "bz2", "bzip2"];
 const SHA256_CHECKSUM_TYPE: &str = "sha256";
+const SHA256_HEX_LEN: usize = 64;
+const BMAP_VERSION: &str = "2.0";
 
 /// The block ranges of an image that a bmap file maps.
 #[derive(Debug)]
@@ -73,21 +74,6 @@ impl Bmap {
             ranges,
             sha256,
         })
-    }
-
-    pub fn whole_image(image_size: u64) -> Self {
-        let block_size = IMAGE_BLOCK_SIZE as u64;
-        let ranges = match image_size {
-            0 => vec![],
-            size => vec![RangeInclusive::new(0, (size - 1) / block_size)],
-        };
-
-        Self {
-            block_size,
-            image_size,
-            ranges,
-            sha256: None,
-        }
     }
 }
 
@@ -153,18 +139,9 @@ pub fn verify_checksums(image_file: &Path, bmap: &Bmap) -> Result<()> {
 
     let mut buf = vec![0u8; COPY_CHUNK_SIZE];
     for (range, expected) in bmap.ranges.iter().zip(sha256) {
-        let end = ((range.end() + 1) * bmap.block_size).min(image_len);
-        let mut pos = range.start() * bmap.block_size;
-        let mut hasher = Sha256::new();
-        while pos < end {
-            let n = usize::try_from((end - pos).min(COPY_CHUNK_SIZE as u64))?;
-            image
-                .read_exact_at(&mut buf[..n], pos)
-                .context("verify_checksums: cannot read image")?;
-            hasher.update(&buf[..n]);
-            pos += n as u64;
-        }
-        let actual = hex(&hasher.finalize());
+        let bytes =
+            range.start() * bmap.block_size..((range.end() + 1) * bmap.block_size).min(image_len);
+        let actual = range_sha256(&image, bytes, &mut buf)?;
         anyhow::ensure!(
             actual.eq_ignore_ascii_case(expected.trim()),
             "verify_checksums: range {range:?} of the image does not match the bmap. It is the \
@@ -174,6 +151,105 @@ pub fn verify_checksums(image_file: &Path, bmap: &Bmap) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Writes a bmap of `image_file` to `bmap_file`. It maps the ranges of `input`, or the whole
+/// image without one, and every block that the image file stores as data. A range of `input`
+/// can be all zeros and a hole in the image, and a bmap flash still has to write it, else the
+/// device keeps what an earlier installation left there.
+pub fn write_bmap(image_file: &Path, input: Option<&Bmap>, bmap_file: &Path) -> Result<()> {
+    let image = fs::File::open(image_file)
+        .context(format!("write_bmap: cannot open {}", image_file.display()))?;
+    let image_len = image
+        .metadata()
+        .context("write_bmap: cannot get image size")?
+        .len();
+    let block_size = IMAGE_BLOCK_SIZE as u64;
+
+    let ranges = mapped_ranges(&image, image_len, input)?;
+
+    let mut buf = vec![0u8; COPY_CHUNK_SIZE];
+    let mut block_map = String::new();
+    for range in &ranges {
+        let bytes = range.start() * block_size..((range.end() + 1) * block_size).min(image_len);
+        let sha256 = range_sha256(&image, bytes, &mut buf)?;
+        block_map.push_str(&format!(
+            "        <Range chksum=\"{sha256}\"> {}-{} </Range>\n",
+            range.start(),
+            range.end()
+        ));
+    }
+    let blocks = image_len.div_ceil(block_size);
+    let mapped: u64 = ranges.iter().map(|r| r.end() - r.start() + 1).sum();
+
+    // like bmaptool, the file checksum is taken with zeros in place of itself
+    let zeros = "0".repeat(SHA256_HEX_LEN);
+    let xml = format!(
+        "<?xml version=\"1.0\" ?>\n\
+         <bmap version=\"{BMAP_VERSION}\">\n    \
+         <ImageSize> {image_len} </ImageSize>\n    \
+         <BlockSize> {block_size} </BlockSize>\n    \
+         <BlocksCount> {blocks} </BlocksCount>\n    \
+         <MappedBlocksCount> {mapped} </MappedBlocksCount>\n    \
+         <ChecksumType> {SHA256_CHECKSUM_TYPE} </ChecksumType>\n    \
+         <BmapFileChecksum> {zeros} </BmapFileChecksum>\n    \
+         <BlockMap>\n{block_map}    </BlockMap>\n\
+         </bmap>\n"
+    );
+    let xml = xml.replacen(&zeros, &hex(&Sha256::digest(xml.as_bytes())), 1);
+
+    fs::write(bmap_file, xml).context(format!("write_bmap: cannot write {}", bmap_file.display()))
+}
+
+/// The blocks of the created bmap: the ranges of `input`, or the whole image without one, and
+/// every block that the image file stores as data.
+fn mapped_ranges(
+    image: &fs::File,
+    image_len: u64,
+    input: Option<&Bmap>,
+) -> Result<Vec<RangeInclusive<u64>>> {
+    let block_size = IMAGE_BLOCK_SIZE as u64;
+    let mut ranges: Vec<Range<u64>> = match input {
+        Some(bmap) => {
+            check_layout(bmap, image_len)?;
+            bmap.ranges
+                .iter()
+                .map(|r| r.start() * bmap.block_size..(r.end() + 1) * bmap.block_size)
+                .collect()
+        }
+        None => vec![Range {
+            start: 0,
+            end: image_len,
+        }],
+    };
+    ranges.extend(sparse::data_ranges(image, 0, image_len)?);
+    Ok(sparse::merge(
+        ranges
+            .into_iter()
+            .map(|r| {
+                r.start / block_size * block_size..r.end.min(image_len).next_multiple_of(block_size)
+            })
+            .filter(|r| !r.is_empty())
+            .collect(),
+    )
+    .into_iter()
+    .map(|r| r.start / block_size..=r.end / block_size - 1)
+    .collect())
+}
+
+fn range_sha256(image: &fs::File, bytes: Range<u64>, buf: &mut [u8]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let mut pos = bytes.start;
+    while pos < bytes.end {
+        let n = usize::try_from((bytes.end - pos).min(buf.len() as u64))?;
+        image
+            .read_exact_at(&mut buf[..n], pos)
+            .context("range_sha256: cannot read image")?;
+        hasher.update(&buf[..n]);
+        pos += n as u64;
+    }
+
+    Ok(hex(&hasher.finalize()))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -191,82 +267,6 @@ fn check_layout(bmap: &Bmap, image_len: u64) -> Result<()> {
     if let Some(range) = bmap.ranges.iter().find(|r| *r.end() >= image_blocks) {
         anyhow::bail!("check_layout: range {range:?} is outside the image");
     }
-
-    Ok(())
-}
-
-/// Writes the zero blocks in the ranges of `bmap` as data. A zero block can be a hole, and a
-/// bmap created from the image would skip it, so a bmap-based flash would keep what an earlier
-/// installation left there.
-pub fn allocate_ranges(image_file: &Path, bmap: &Bmap) -> Result<()> {
-    let image = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(image_file)
-        .context(format!(
-            "allocate_ranges: cannot open {}",
-            image_file.display()
-        ))?;
-    let image_len = image
-        .metadata()
-        .context("allocate_ranges: cannot get image size")?
-        .len();
-    check_layout(bmap, image_len)?;
-
-    let image_block_size = IMAGE_BLOCK_SIZE as u64;
-    let mut buf = vec![0u8; COPY_CHUNK_SIZE];
-    for range in &bmap.ranges {
-        // check whole image blocks, also when the bmap uses a smaller block size
-        let start = range.start() * bmap.block_size / image_block_size * image_block_size;
-        let end = ((range.end() + 1) * bmap.block_size)
-            .next_multiple_of(image_block_size)
-            .min(image_len);
-
-        let mut pos = start;
-        while pos < end {
-            let n = usize::try_from((end - pos).min(COPY_CHUNK_SIZE as u64))?;
-            let chunk = &mut buf[..n];
-            image
-                .read_exact_at(chunk, pos)
-                .context("allocate_ranges: cannot read image")?;
-            write_zero_blocks(&image, chunk, pos)?;
-            pos += n as u64;
-        }
-    }
-
-    Ok(())
-}
-
-fn write_zero_blocks(image: &fs::File, chunk: &[u8], pos: u64) -> Result<()> {
-    let blocks: Vec<(u64, &[u8])> = if is_zero(chunk) {
-        vec![(pos, chunk)]
-    } else {
-        chunk
-            .chunks(IMAGE_BLOCK_SIZE)
-            .enumerate()
-            .filter(|(_, block)| is_zero(block))
-            .map(|(i, block)| (pos + (i * IMAGE_BLOCK_SIZE) as u64, block))
-            .collect()
-    };
-
-    blocks.into_iter().try_for_each(|(pos, block)| {
-        image
-            .write_all_at(block, pos)
-            .context("allocate_ranges: cannot write image")
-    })
-}
-
-pub fn generate_bmap_file(image_file: &str) -> Result<()> {
-    let mut bmaptool = Command::new("bmaptool");
-    bmaptool
-        .arg("create")
-        .arg("-o")
-        .arg(format!("{image_file}.{BMAP_EXTENSION}"))
-        .arg(image_file);
-    let status = bmaptool
-        .status()
-        .context(format!("generate_bmap_file: cannot run {bmaptool:?}"))?;
-    anyhow::ensure!(status.success(), "generate_bmap_file: {bmaptool:?} failed");
 
     Ok(())
 }
@@ -296,7 +296,7 @@ mod tests {
         )
     }
 
-    fn write_bmap(path: &Path, image_size: u64, ranges: &[RangeInclusive<u64>]) {
+    fn write_input_bmap(path: &Path, image_size: u64, ranges: &[RangeInclusive<u64>]) {
         let block_map: String = ranges
             .iter()
             .map(|r| format!("<Range>{}-{}</Range>", r.start(), r.end()))
@@ -317,10 +317,10 @@ mod tests {
         path
     }
 
-    fn created_bmap(image: &Path) -> Bmap {
-        let image = image.to_str().expect("image path");
-        generate_bmap_file(image).expect("generate bmap");
-        Bmap::read(Path::new(&format!("{image}.{BMAP_EXTENSION}"))).expect("read bmap")
+    fn created_bmap(image: &Path, input: Option<&Bmap>) -> Bmap {
+        let path = image.with_extension(BMAP_EXTENSION);
+        write_bmap(image, input, &path).expect("write bmap");
+        Bmap::read(&path).expect("read bmap")
     }
 
     fn is_mapped(bmap: &Bmap, block: u64) -> bool {
@@ -428,27 +428,29 @@ mod tests {
     }
 
     #[test]
-    fn allocate_ranges_maps_zero_ranges_of_the_input_bmap() {
+    fn write_bmap_maps_zero_ranges_of_the_input_bmap() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
         let input_bmap = dir.path().join("input.bmap");
-        write_bmap(
-            &input_bmap,
-            IMAGE_BLOCKS * BLOCK_SIZE,
-            &[DATA_BLOCK..=DATA_BLOCK, ZERO_BLOCKS],
-        );
+        write_input_bmap(&input_bmap, IMAGE_BLOCKS * BLOCK_SIZE, &[ZERO_BLOCKS]);
         let input = Bmap::read(&input_bmap).expect("read bmap");
 
-        let before = created_bmap(&image);
-        assert!(ZERO_BLOCKS.clone().all(|b| !is_mapped(&before, b)));
-
-        allocate_ranges(&image, &input).expect("allocate ranges");
-        let after = created_bmap(&image);
-        assert!(ZERO_BLOCKS.clone().all(|b| is_mapped(&after, b)));
-        assert!(!is_mapped(&after, UNMAPPED_BLOCK));
+        let bmap = created_bmap(&image, Some(&input));
+        assert!(ZERO_BLOCKS.clone().all(|b| is_mapped(&bmap, b)));
+        assert!(
+            is_mapped(&bmap, DATA_BLOCK),
+            "data outside the input ranges"
+        );
+        assert!(!is_mapped(&bmap, UNMAPPED_BLOCK));
+        let file = fs::File::open(&image).expect("open image");
+        assert_eq!(
+            sparse::data_ranges(&file, 0, IMAGE_BLOCKS * BLOCK_SIZE).expect("data ranges"),
+            vec![DATA_BLOCK * BLOCK_SIZE..(DATA_BLOCK + 1) * BLOCK_SIZE],
+            "image is not sparse any more"
+        );
 
         let device = dir.path().join("device");
-        bmap_flash(&image, &after, &device);
+        bmap_flash(&image, &bmap, &device);
         let device = fs::read(&device).expect("read device");
         let zero_start = usize::try_from(ZERO_BLOCKS.start() * BLOCK_SIZE).expect("start");
         let zero_end = usize::try_from((ZERO_BLOCKS.end() + 1) * BLOCK_SIZE).expect("end");
@@ -456,17 +458,18 @@ mod tests {
     }
 
     #[test]
-    fn allocate_ranges_maps_whole_image() {
+    fn write_bmap_without_input_maps_whole_image() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
 
-        allocate_ranges(&image, &Bmap::whole_image(IMAGE_BLOCKS * BLOCK_SIZE))
-            .expect("allocate ranges");
-        assert_eq!(created_bmap(&image).ranges, vec![0..=IMAGE_BLOCKS - 1]);
+        assert_eq!(
+            created_bmap(&image, None).ranges,
+            vec![0..=IMAGE_BLOCKS - 1]
+        );
     }
 
     #[test]
-    fn allocate_ranges_maps_whole_blocks_for_a_smaller_bmap_block_size() {
+    fn write_bmap_maps_whole_blocks_for_a_smaller_bmap_block_size() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
         // starts in DATA_BLOCK and ends in the hole after it
@@ -478,8 +481,35 @@ mod tests {
             sha256: None,
         };
 
-        allocate_ranges(&image, &input).expect("allocate ranges");
-        assert!(is_mapped(&created_bmap(&image), DATA_BLOCK + 1));
+        assert!(is_mapped(
+            &created_bmap(&image, Some(&input)),
+            DATA_BLOCK + 1
+        ));
+    }
+
+    #[test]
+    fn write_bmap_is_accepted_by_bmaptool() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = sparse_image(dir.path());
+        // a mapped last block that is shorter than the block size
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&image)
+            .expect("open image")
+            .write_all_at(&[DATA_BYTE; PARTIAL_BLOCK_LEN], IMAGE_BLOCKS * BLOCK_SIZE)
+            .expect("write partial block");
+        let bmap = image.with_extension(BMAP_EXTENSION);
+        write_bmap(&image, None, &bmap).expect("write bmap");
+
+        let status = std::process::Command::new("bmaptool")
+            .arg("copy")
+            .arg("--bmap")
+            .arg(&bmap)
+            .arg(&image)
+            .arg(dir.path().join("device"))
+            .status()
+            .expect("run bmaptool");
+        assert!(status.success(), "bmaptool rejected the bmap");
     }
 
     #[test]
@@ -494,14 +524,14 @@ mod tests {
             .write_all_at(&[DATA_BYTE; PARTIAL_BLOCK_LEN], IMAGE_BLOCKS * BLOCK_SIZE)
             .expect("write partial block");
 
-        verify_checksums(&image, &created_bmap(&image)).expect("verify checksums");
+        verify_checksums(&image, &created_bmap(&image, None)).expect("verify checksums");
     }
 
     #[test]
     fn verify_checksums_rejects_changed_image() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
-        let bmap = created_bmap(&image);
+        let bmap = created_bmap(&image, None);
         fs::OpenOptions::new()
             .write(true)
             .open(&image)
@@ -517,26 +547,29 @@ mod tests {
     fn verify_checksums_rejects_bmap_without_checksums() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
-        let mut bmap = created_bmap(&image);
+        let mut bmap = created_bmap(&image, None);
         bmap.sha256 = None;
 
         assert!(verify_checksums(&image, &bmap).is_err());
     }
 
     #[test]
-    fn allocate_ranges_rejects_bmap_of_another_image() {
+    fn bmap_of_another_image_is_rejected() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = sparse_image(dir.path());
-
-        let other_size = Bmap::whole_image((IMAGE_BLOCKS + 1) * BLOCK_SIZE);
-        assert!(allocate_ranges(&image, &other_size).is_err());
-
+        let bmap_file = dir.path().join("out.bmap");
+        let mut other_size = created_bmap(&image, None);
+        other_size.image_size += BLOCK_SIZE;
         let outside = Bmap {
             block_size: BLOCK_SIZE,
             image_size: IMAGE_BLOCKS * BLOCK_SIZE,
             ranges: vec![RangeInclusive::new(IMAGE_BLOCKS, IMAGE_BLOCKS)],
-            sha256: None,
+            sha256: Some(vec![String::new()]),
         };
-        assert!(allocate_ranges(&image, &outside).is_err());
+
+        for bmap in [&other_size, &outside] {
+            assert!(verify_checksums(&image, bmap).is_err());
+            assert!(write_bmap(&image, Some(bmap), &bmap_file).is_err());
+        }
     }
 }

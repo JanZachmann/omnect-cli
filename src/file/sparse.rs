@@ -31,6 +31,19 @@ pub fn data_ranges(file: &File, start: u64, end: u64) -> Result<Vec<Range<u64>>>
     Ok(ranges)
 }
 
+/// Sorts `ranges` and joins the ones that overlap or touch.
+pub fn merge(mut ranges: Vec<Range<u64>>) -> Vec<Range<u64>> {
+    ranges.sort_by_key(|r| r.start);
+    let mut merged: Vec<Range<u64>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
 /// Copies `len` bytes of `src` at `src_offset` to `dst` at `dst_offset`. Holes of `src` are
 /// skipped, so they stay holes in a new `dst`.
 pub fn copy_range(
@@ -110,6 +123,14 @@ mod tests {
         assert_eq!(
             data_ranges(&file, data.start + 1, data.end - 1).expect("data ranges"),
             vec![data.start + 1..data.end - 1]
+        );
+    }
+
+    #[test]
+    fn merge_joins_overlapping_and_touching_ranges() {
+        assert_eq!(
+            merge(vec![8..10, 0..2, 1..4, 4..5, 12..12]),
+            vec![0..5, 8..10, 12..12]
         );
     }
 
