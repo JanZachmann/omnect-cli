@@ -2,11 +2,24 @@ use crate::file::{
     compression::Compression,
     functions::{FileCopyFromParams, FileCopyToParams, Partition},
 };
-use clap::Parser;
+use clap::{Args, Parser};
 use std::path::PathBuf;
 use url::Url;
 
 const COPYRIGHT: &str = "Copyright © 2021 by conplement AG";
+
+#[derive(Args, Debug, Default)]
+pub struct ImageOutput {
+    /// optional: create a bmap of the output image
+    #[arg(short = 'b', long = "output-bmap")]
+    pub output_bmap: bool,
+    /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+    #[arg(long = "input-bmap", requires = "output_bmap")]
+    pub input_bmap: Option<PathBuf>,
+    /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
+    #[arg(short = 'p', long = "pack-image", value_enum)]
+    pub compress_image: Option<Compression>,
+}
 
 // ToDo: command completion
 #[derive(Parser, Debug)]
@@ -34,15 +47,8 @@ pub enum Docker {
         /// destination path of the docker image in the firmware image (must end in ".tar.gz")
         #[clap(short = 'e', long = "dest")]
         dest: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
 }
 
@@ -58,15 +64,8 @@ pub enum File {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// copy files from image
     CopyFromImage {
@@ -94,15 +93,8 @@ pub enum IdentityConfig {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// EXPERIMENTAL: set transparent gateway config.toml file and additional certificates and keys
     SetIotedgeGatewayConfig {
@@ -121,15 +113,8 @@ pub enum IdentityConfig {
         /// path to device identity certificate key file
         #[arg(short = 'k', long = "device_identity_key")]
         device_identity_key: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// EXPERIMENTAL: set leaf device config.toml file and additional certificate
     SetIotLeafSasConfig {
@@ -142,15 +127,8 @@ pub enum IdentityConfig {
         /// path to root ca certificate file
         #[arg(short = 'r', long = "root_ca")]
         root_ca: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// set certificates in order to support X.509 based DPS provisioning and certificate renewal via EST
     SetDeviceCertificate {
@@ -169,15 +147,8 @@ pub enum IdentityConfig {
         /// period of validity in days
         #[arg(short = 'D', long = "days")]
         days: u32,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// set certificates in order to support X.509 based DPS provisioning WITHOUT certificate renewal via EST
     SetDeviceCertificateNoEst {
@@ -190,15 +161,8 @@ pub enum IdentityConfig {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// generate and set bootstrap certificate for edge ca issuance/renewal.
     SetEdgeCaCertificate {
@@ -217,15 +181,8 @@ pub enum IdentityConfig {
         /// period of validity in days
         #[arg(short = 'D', long = "days")]
         days: u32,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
 }
 
@@ -241,15 +198,8 @@ pub enum IotHubDeviceUpdate {
         /// path to wic image file (optionally compressed with xz, bzip2 or gzip)
         #[arg(short = 'i', long = "image")]
         image: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
     /// import update to azure iot-hub
     ImportUpdate {
@@ -363,15 +313,8 @@ pub enum SshConfig {
         /// path to public key of the ssh root ca
         #[arg(short = 'r', long = "root_ca")]
         root_ca: PathBuf,
-        /// optional: create a bmap of the output image
-        #[arg(short = 'b', long = "output-bmap")]
-        output_bmap: bool,
-        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
-        #[arg(long = "input-bmap", requires = "output_bmap")]
-        input_bmap: Option<PathBuf>,
-        /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
-        #[arg(short = 'p', long = "pack-image", value_enum)]
-        compress_image: Option<Compression>,
+        #[command(flatten)]
+        output: ImageOutput,
     },
 
     /// set ssh connection parameters (see

@@ -17,11 +17,12 @@ use cli::{
         SetConfig, SetDeviceCertificate, SetDeviceCertificateNoEst, SetEdgeCaCertificate,
         SetIotLeafSasConfig, SetIotedgeGatewayConfig,
     },
+    ImageOutput,
     IotHubDeviceUpdate::{self, SetDeviceConfig as IotHubDeviceUpdateSet},
     SshConfig::{SetCertificate, SetConnection},
 };
 use file::{
-    bmap::{BMAP_EXTENSION, Bmap},
+    bmap::{self, Bmap},
     compression::Compression,
     functions::FileCopyToParams,
 };
@@ -55,16 +56,16 @@ impl Drop for TempDirGuard {
     }
 }
 
-fn run_image_command<F>(
-    image_file: PathBuf,
-    output_bmap: bool,
-    input_bmap: Option<PathBuf>,
-    target_compression: Option<Compression>,
-    command: F,
-) -> Result<()>
+fn run_image_command<F>(image_file: PathBuf, output: ImageOutput, command: F) -> Result<()>
 where
     F: FnOnce(&PathBuf) -> Result<()>,
 {
+    let ImageOutput {
+        output_bmap,
+        input_bmap,
+        compress_image: target_compression,
+    } = output;
+
     anyhow::ensure!(
         image_file.try_exists().is_ok_and(|exists| exists),
         "run_image_command: image doesn't exist {}",
@@ -72,7 +73,7 @@ where
     );
 
     let input_bmap = if output_bmap {
-        file::bmap::find_input_bmap(&image_file, input_bmap.as_deref())?
+        bmap::find_input_bmap(&image_file, input_bmap.as_deref())?
             .map(|path| Bmap::read(&path).map(|bmap| (path, bmap)))
             .transpose()?
     } else {
@@ -108,25 +109,20 @@ where
     }
 
     if let Some((path, bmap)) = &input_bmap {
-        file::bmap::verify_checksums(&tmp_image_file, bmap)
+        bmap::verify_checksums(&tmp_image_file, bmap)
             .context(format!("cannot use input bmap {}", path.display()))?;
     }
 
     // run command
     command(&tmp_image_file)?;
 
-    let tmp_bmap = PathBuf::from(format!(
-        "{}.{BMAP_EXTENSION}",
-        tmp_image_file
-            .to_str()
-            .context("cannot get image file path")?
-    ));
+    let tmp_bmap = bmap::bmap_path(&tmp_image_file);
     if output_bmap {
         match &input_bmap {
             Some((path, _)) => info!("the bmap maps the ranges of {}", path.display()),
             None => info!("no input bmap found, so the bmap maps the whole image"),
         }
-        file::bmap::write_bmap(
+        bmap::write_bmap(
             &tmp_image_file,
             input_bmap.as_ref().map(|(_, bmap)| bmap),
             &tmp_bmap,
@@ -228,10 +224,8 @@ pub fn run() -> Result<()> {
             image,
             partition,
             dest,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(image, output_bmap, input_bmap, compress_image, |img| {
+            output,
+        }) => run_image_command(image, output, |img| {
             anyhow::ensure!(
                 dest.to_string_lossy().ends_with(".tar.gz"),
                 format!(
@@ -269,10 +263,8 @@ pub fn run() -> Result<()> {
             config,
             image,
             payload,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(image, output_bmap, input_bmap, compress_image, |img| {
+            output,
+        }) => run_image_command(image, output, |img| {
             file::set_identity_config(&config, img, payload.as_deref())
         })?,
         Command::Identity(SetDeviceCertificate {
@@ -281,9 +273,7 @@ pub fn run() -> Result<()> {
             image,
             device_id,
             days,
-            output_bmap,
-            input_bmap,
-            compress_image,
+            output,
         }) => {
             let cert_info = create_image_cert(
                 &image,
@@ -298,7 +288,7 @@ pub fn run() -> Result<()> {
             )
             .context("set_device_certificate: could not create certificate")?;
 
-            run_image_command(image, output_bmap, input_bmap, compress_image, |img| {
+            run_image_command(image, output, |img| {
                 file::set_device_cert(
                     Some(&intermediate_full_chain_cert),
                     &cert_info.cert_path,
@@ -313,9 +303,7 @@ pub fn run() -> Result<()> {
             image,
             device_id,
             days,
-            output_bmap,
-            input_bmap,
-            compress_image,
+            output,
         }) => {
             let cert_info = create_image_cert(
                 &image,
@@ -330,7 +318,7 @@ pub fn run() -> Result<()> {
             )
             .context("set_edge_ca_certificate: could not create certificate")?;
 
-            run_image_command(image, output_bmap, input_bmap, compress_image, |img| {
+            run_image_command(image, output, |img| {
                 file::set_edge_ca_cert(
                     Some(&intermediate_full_chain_cert),
                     &cert_info.cert_path,
@@ -343,10 +331,8 @@ pub fn run() -> Result<()> {
             device_cert: device_cert_pem,
             device_key: device_key_pem,
             image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(image, output_bmap, input_bmap, compress_image, |img| {
+            output,
+        }) => run_image_command(image, output, |img| {
             file::set_device_cert(None, &device_cert_pem, &device_key_pem, img)
         })?,
         Command::Identity(SetIotedgeGatewayConfig {
@@ -355,66 +341,38 @@ pub fn run() -> Result<()> {
             root_ca,
             device_identity,
             device_identity_key,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(
-            image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-            |img: &PathBuf| {
-                file::set_iotedge_gateway_config(
-                    &config,
-                    img,
-                    &root_ca,
-                    &device_identity,
-                    &device_identity_key,
-                )
-            },
-        )?,
+            output,
+        }) => run_image_command(image, output, |img: &PathBuf| {
+            file::set_iotedge_gateway_config(
+                &config,
+                img,
+                &root_ca,
+                &device_identity,
+                &device_identity_key,
+            )
+        })?,
         Command::Identity(SetIotLeafSasConfig {
             config,
             image,
             root_ca,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(
-            image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-            |img: &PathBuf| file::set_iot_leaf_sas_config(&config, img, &root_ca),
-        )?,
+            output,
+        }) => run_image_command(image, output, |img: &PathBuf| {
+            file::set_iot_leaf_sas_config(&config, img, &root_ca)
+        })?,
         Command::Ssh(SetCertificate {
             image,
             root_ca,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(
-            image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-            |img: &PathBuf| file::set_ssh_tunnel_certificate(img, &root_ca),
-        )?,
+            output,
+        }) => run_image_command(image, output, |img: &PathBuf| {
+            file::set_ssh_tunnel_certificate(img, &root_ca)
+        })?,
         Command::IotHubDeviceUpdate(IotHubDeviceUpdateSet {
             iot_hub_device_update_config,
             image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(
-            image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-            |img: &PathBuf| {
-                file::set_iot_hub_device_update_config(&iot_hub_device_update_config, img)
-            },
-        )?,
+            output,
+        }) => run_image_command(image, output, |img: &PathBuf| {
+            file::set_iot_hub_device_update_config(&iot_hub_device_update_config, img)
+        })?,
         Command::IotHubDeviceUpdate(IotHubDeviceUpdate::ImportUpdate {
             import_manifest: import_manifest_path,
             storage_container_name,
@@ -527,20 +485,14 @@ pub fn run() -> Result<()> {
         Command::File(CopyToImage {
             file_copy_params,
             image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-        }) => run_image_command(
-            image,
-            output_bmap,
-            input_bmap,
-            compress_image,
-            |img: &PathBuf| file::copy_to_image(&file_copy_params, img),
-        )?,
+            output,
+        }) => run_image_command(image, output, |img: &PathBuf| {
+            file::copy_to_image(&file_copy_params, img)
+        })?,
         Command::File(CopyFromImage {
             file_copy_params,
             image,
-        }) => run_image_command(image, false, None, None, |img: &PathBuf| {
+        }) => run_image_command(image, ImageOutput::default(), |img: &PathBuf| {
             file::copy_from_image(&file_copy_params, img)
         })?,
     }

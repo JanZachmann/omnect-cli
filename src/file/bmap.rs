@@ -1,4 +1,4 @@
-use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, sparse};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, compression::Compression, sparse};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -8,8 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const BMAP_EXTENSION: &str = "bmap";
-const COMPRESSION_EXTENSIONS: [&str; 5] = ["xz", "gz", "gzip", "bz2", "bzip2"];
+const BMAP_EXTENSION: &str = "bmap";
 const SHA256_CHECKSUM_TYPE: &str = "sha256";
 const SHA256_HEX_LEN: usize = 64;
 const BMAP_VERSION: &str = "2.0";
@@ -103,21 +102,18 @@ pub fn find_input_bmap(image: &Path, explicit: Option<&Path>) -> Result<Option<P
         return Ok(Some(path.to_path_buf()));
     }
 
-    let with_bmap_extension = |p: &Path| {
-        let mut path = p.as_os_str().to_owned();
-        path.push(format!(".{BMAP_EXTENSION}"));
-        PathBuf::from(path)
-    };
-    let mut candidates = vec![with_bmap_extension(image)];
-    if image
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| COMPRESSION_EXTENSIONS.contains(&e))
-    {
-        candidates.push(with_bmap_extension(&image.with_extension("")));
+    let mut candidates = vec![bmap_path(image)];
+    if Compression::has_extension(image) {
+        candidates.push(bmap_path(&image.with_extension("")));
     }
 
     Ok(candidates.into_iter().find(|p| p.is_file()))
+}
+
+pub fn bmap_path(image: &Path) -> PathBuf {
+    let mut path = image.as_os_str().to_owned();
+    path.push(format!(".{BMAP_EXTENSION}"));
+    PathBuf::from(path)
 }
 
 /// Fails if a range of `image_file` does not match its checksum in `bmap`, so the bmap of
@@ -201,8 +197,6 @@ pub fn write_bmap(image_file: &Path, input: Option<&Bmap>, bmap_file: &Path) -> 
     fs::write(bmap_file, xml).context(format!("write_bmap: cannot write {}", bmap_file.display()))
 }
 
-/// The blocks of the created bmap: the ranges of `input`, or the whole image without one, and
-/// every block that the image file stores as data.
 fn mapped_ranges(
     image: &fs::File,
     image_len: u64,

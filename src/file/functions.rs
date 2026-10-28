@@ -1,14 +1,16 @@
 use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, partition::SECTOR_SIZE, sparse};
 use anyhow::{Context, Result};
 use log::{debug, warn};
-use std::collections::HashMap;
-use std::fmt::{self, Display};
-use std::fs;
-use std::ops::Range;
-use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::str::FromStr;
+use std::{
+    collections::HashMap,
+    fmt::{self, Display},
+    fs,
+    ops::Range,
+    os::unix::fs::FileExt,
+    path::{Path, PathBuf},
+    process::Command,
+    str::FromStr,
+};
 use stdext::function_name;
 use uuid::Uuid;
 
