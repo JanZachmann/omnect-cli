@@ -1153,12 +1153,12 @@ fn check_file_copy_without_output_bmap_keeps_image_sparse() {
 #[test]
 fn check_no_output_bmap_when_image_write_back_fails() {
     let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
-    let image_path = tr.to_pathbuf("testfiles/image.wic");
-    let bmap_path = PathBuf::from(format!("{}.bmap", image_path.to_string_lossy()));
+    let image_path = tr.to_pathbuf("testfiles/image.wic.xz");
+    let written_image_path = image_path.with_extension("");
+    let bmap_path = image_path.with_extension("bmap");
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
-    let mut permissions = image_path.metadata().expect("image metadata").permissions();
-    permissions.set_readonly(true);
-    fs::set_permissions(&image_path, permissions).expect("make image read-only");
+    // a directory in place of the written image makes the write back fail, also for root
+    create_dir_all(&written_image_path).expect("create directory");
 
     Command::cargo_bin("omnect-cli")
         .expect("omnect-cli binary")
@@ -1175,6 +1175,29 @@ fn check_no_output_bmap_when_image_write_back_fails() {
         !bmap_path.exists(),
         "bmap written for an image that was not written back"
     );
+}
+
+#[test]
+fn check_input_bmap_requires_output_bmap() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let bmap_path = tr.to_pathbuf("testfiles/image.wic.bmap");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    let image_hash = Testrunner::file_hash(&image_path);
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path)
+        .arg("--input-bmap")
+        .arg(&bmap_path)
+        .assert()
+        .failure();
+    assert_eq!(Testrunner::file_hash(&image_path), image_hash);
 }
 
 #[test]
@@ -1292,8 +1315,7 @@ fn check_bmap_generation_wic_xz() {
     let image_path_wic_xz = tr.to_pathbuf("testfiles/image.wic.xz");
     let image_path_wic = image_path_wic_xz.with_extension("");
     let image_path_wic_copy = image_path_wic_xz.with_extension("copy");
-    // a Yocto bmap of an image with the same layout; omnect-cli replaces it with the one it
-    // creates
+    // the Yocto bmap of the image; omnect-cli replaces it with the one it creates
     let image_path_bmap = tr.to_pathbuf("testfiles/image.wic.bmap");
     let input_bmap = read_bmap(&image_path_bmap);
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
