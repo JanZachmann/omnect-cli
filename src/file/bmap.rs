@@ -1,9 +1,7 @@
 use crate::file::partition::{SECTOR_SIZE, get_partitions};
 use anyhow::{Context, Result};
 use log::debug;
-use std::fs;
-use std::os::unix::fs::FileExt;
-use std::process::Command;
+use std::{env, fs, os::unix::fs::FileExt, process::Command};
 
 const EXT4_SUPERBLOCK_OFFSET: u64 = 1024;
 const EXT4_SUPERBLOCK_SIZE: usize = 1024;
@@ -17,8 +15,8 @@ const EXT4_MIN_BLOCK_SIZE: u64 = 1024;
 const EXT4_MAX_LOG_BLOCK_SIZE: u32 = 6;
 
 const DEBUGFS: &str = "debugfs";
-// debugfs is installed to sbin, which is not always in the PATH of a normal user
-const DEBUGFS_SBIN: &str = "/usr/sbin/debugfs";
+// e2fsprogs installs to sbin, which is not always in the PATH of a normal user
+const SBIN_DIRS: &str = "/usr/sbin:/sbin";
 
 struct Ext4Journal {
     inode: u32,
@@ -55,26 +53,24 @@ fn read_ext4_journal(image: &fs::File, offset: u64) -> Result<Option<Ext4Journal
     Ok(Some(Ext4Journal { inode, block_size }))
 }
 
+fn sbin_command(program: &str) -> Command {
+    let path =
+        env::var("PATH").map_or_else(|_| SBIN_DIRS.to_string(), |p| format!("{p}:{SBIN_DIRS}"));
+    let mut cmd = Command::new(program);
+    cmd.env("PATH", path);
+    cmd
+}
+
 fn ext4_journal_blocks(image_file: &str, offset: u64, inode: u32) -> Result<Vec<u64>> {
-    let debugfs_cmd = |program| {
-        let mut cmd = Command::new(program);
-        cmd.arg("-R")
-            .arg(format!("blocks <{inode}>"))
-            .arg(format!("{image_file}?offset={offset}"));
-        cmd
-    };
-    let mut debugfs = debugfs_cmd(DEBUGFS);
-    let output = match debugfs.output() {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            debugfs = debugfs_cmd(DEBUGFS_SBIN);
-            debugfs.output()
-        }
-        output => output,
-    }
-    .context(format!("ext4_journal_blocks: cannot run {debugfs:?}"))?;
+    let output = sbin_command(DEBUGFS)
+        .arg("-R")
+        .arg(format!("blocks <{inode}>"))
+        .arg(format!("{image_file}?offset={offset}"))
+        .output()
+        .context(format!("ext4_journal_blocks: cannot run {DEBUGFS}"))?;
     anyhow::ensure!(
         output.status.success(),
-        "ext4_journal_blocks: {debugfs:?} failed: {}",
+        "ext4_journal_blocks: {DEBUGFS} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -200,7 +196,7 @@ mod tests {
 
         let offset = u64::from(PART_START_LBA) * SECTOR_SIZE;
         let fs_blocks = u64::from(PART_SECTORS) * SECTOR_SIZE / FS_BLOCK_SIZE;
-        run(Command::new("mkfs.ext4")
+        run(sbin_command("mkfs.ext4")
             .arg("-q")
             .arg("-F")
             .arg("-b")
@@ -323,7 +319,7 @@ mod tests {
         assert!(journal_on_device_matches_image(image, &device));
 
         let offset = u64::from(PART_START_LBA) * SECTOR_SIZE;
-        run(Command::new("e2fsck")
+        run(sbin_command("e2fsck")
             .arg("-fn")
             .arg(format!("{image}?offset={offset}")));
     }

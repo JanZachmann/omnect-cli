@@ -1,15 +1,15 @@
+use crate::file::IMAGE_BLOCK_SIZE;
 use anyhow::{Context, Result};
 use filemagic::Magic;
 use log::debug;
 use std::env;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-
-const SPARSE_BLOCK_SIZE: u64 = 4096;
 
 #[derive(Clone, Debug, EnumIter)]
 #[allow(non_camel_case_types)]
@@ -79,22 +79,24 @@ impl Compression {
         source: &mut std::fs::File,
         destination: &mut std::fs::File,
     ) -> std::io::Result<u64> {
-        let sparse = SparseWriter(destination);
-        let mut dec: Box<dyn std::io::Write + '_> = match &self {
-            Compression::bzip2 => Box::new(bzip2::write::BzDecoder::new(sparse)),
-            Compression::gzip => Box::new(flate2::write::GzDecoder::new(sparse)),
-            Compression::xz { .. } => Box::new(xz2::write::XzDecoder::new(sparse)),
+        let sparse = SparseWriter::new(destination)?;
+        // only `finish` detects a truncated or corrupt stream
+        let (bytes_read, sparse) = match &self {
+            Compression::bzip2 => {
+                let mut dec = bzip2::write::BzDecoder::new(sparse);
+                (std::io::copy(source, &mut dec)?, dec.finish()?)
+            }
+            Compression::gzip => {
+                let mut dec = flate2::write::GzDecoder::new(sparse);
+                (std::io::copy(source, &mut dec)?, dec.finish()?)
+            }
+            Compression::xz { .. } => {
+                let mut dec = xz2::write::XzDecoder::new(sparse);
+                (std::io::copy(source, &mut dec)?, dec.finish()?)
+            }
         };
-
-        let bytes_written = std::io::copy(source, &mut dec)?;
-        dec.write_all(&[])?;
-        dec.flush()?;
-        drop(dec);
-
-        // zero blocks at the end were only seeked over
-        let len = destination.stream_position()?;
-        destination.set_len(len)?;
-        Ok(bytes_written)
+        sparse.finish()?;
+        Ok(bytes_read)
     }
 
     fn marker(&self) -> &'static str {
@@ -135,24 +137,55 @@ impl Compression {
     }
 }
 
-/// Seeks over zero blocks instead of writing them, so they stay holes in a new file.
-struct SparseWriter<'a>(&'a mut File);
+/// Skips zero blocks, so they stay holes in the file.
+struct SparseWriter<'a> {
+    file: &'a mut File,
+    pos: u64,
+}
+
+impl<'a> SparseWriter<'a> {
+    fn new(file: &'a mut File) -> std::io::Result<Self> {
+        let pos = file.stream_position()?;
+        // skipped zero blocks must read back as zeros
+        file.set_len(pos)?;
+        Ok(Self { file, pos })
+    }
+
+    fn finish(self) -> std::io::Result<()> {
+        // extends the file over zero blocks at the end
+        self.file.set_len(self.pos)?;
+        self.file.seek(SeekFrom::Start(self.pos))?;
+        Ok(())
+    }
+}
 
 impl Write for SparseWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let pos = self.0.stream_position()?;
-        let to_block_end = SPARSE_BLOCK_SIZE - pos % SPARSE_BLOCK_SIZE;
-        let chunk = &buf[..buf.len().min(to_block_end as usize)];
-        if chunk.iter().all(|b| *b == 0) {
-            self.0.seek(SeekFrom::Current(chunk.len() as i64))?;
-            Ok(chunk.len())
-        } else {
-            self.0.write(chunk)
+        let is_zero = |b: &[u8]| b.iter().all(|x| *x == 0);
+        let block_offset = (self.pos % IMAGE_BLOCK_SIZE as u64) as usize;
+
+        // one call handles a run of blocks that are all zero or all data
+        let mut end = buf.len().min(IMAGE_BLOCK_SIZE - block_offset);
+        let zero = is_zero(&buf[..end]);
+        while end < buf.len() {
+            let next = buf.len().min(end + IMAGE_BLOCK_SIZE);
+            if is_zero(&buf[end..next]) != zero {
+                break;
+            }
+            end = next;
         }
+
+        let written = if zero {
+            end
+        } else {
+            self.file.write_at(&buf[..end], self.pos)?
+        };
+        self.pos += written as u64;
+        Ok(written)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+        self.file.flush()
     }
 }
 
@@ -197,9 +230,31 @@ mod tests {
     // unit of `st_blocks`
     const STAT_BLOCK_SIZE: u64 = 512;
     const DATA_OFFSET: usize = 1024 * 1024 + 100;
+    const DATA: &[u8] = b"abc";
     const IMAGE_LEN: usize = 3 * 1024 * 1024 + 123;
+    const XZ_TEST_LEVEL: u32 = 1;
+    // cuts into the trailer, which every format checks only at the end of the stream
+    const TRUNCATED_BYTES: u64 = 4;
+    const OLD_CONTENT_BYTE: u8 = 0xa5;
+    const OLD_CONTENT_EXTRA_LEN: usize = 4096;
 
-    fn roundtrip(compression: Compression, image: &[u8]) -> File {
+    fn all_compressions() -> [Compression; 3] {
+        [
+            Compression::bzip2,
+            Compression::gzip,
+            Compression::xz {
+                compression_level: XZ_TEST_LEVEL,
+            },
+        ]
+    }
+
+    fn test_image() -> Vec<u8> {
+        let mut image = vec![0u8; IMAGE_LEN];
+        image[DATA_OFFSET..DATA_OFFSET + DATA.len()].copy_from_slice(DATA);
+        image
+    }
+
+    fn compress_image(compression: &Compression, image: &[u8]) -> File {
         let mut source = tempfile::tempfile().expect("create source");
         source.write_all(image).expect("write source");
         source.rewind().expect("rewind source");
@@ -209,39 +264,79 @@ mod tests {
             .compress(&mut source, &mut compressed)
             .expect("compress");
         compressed.rewind().expect("rewind compressed");
+        compressed
+    }
 
-        let mut decompressed = tempfile::tempfile().expect("create decompressed");
-        compression
-            .decompress(&mut compressed, &mut decompressed)
-            .expect("decompress");
-        decompressed
+    fn read_all(file: &mut File) -> Vec<u8> {
+        let mut content = Vec::new();
+        file.rewind().expect("rewind");
+        file.read_to_end(&mut content).expect("read");
+        content
     }
 
     #[test]
     fn decompress_keeps_zero_blocks_as_holes() {
-        let mut image = vec![0u8; IMAGE_LEN];
-        image[DATA_OFFSET..DATA_OFFSET + 3].copy_from_slice(b"abc");
+        let image = test_image();
 
-        for compression in [
-            Compression::bzip2,
-            Compression::gzip,
-            Compression::xz {
-                compression_level: 1,
-            },
-        ] {
-            let mut decompressed = roundtrip(compression.clone(), &image);
+        for compression in all_compressions() {
+            let mut compressed = compress_image(&compression, &image);
+            let mut decompressed = tempfile::tempfile().expect("create decompressed");
+            compression
+                .decompress(&mut compressed, &mut decompressed)
+                .expect("decompress");
 
-            let mut content = Vec::new();
-            decompressed.rewind().expect("rewind decompressed");
-            decompressed
-                .read_to_end(&mut content)
-                .expect("read decompressed");
-            assert!(content == image, "{compression:?}: content differs");
-
+            assert!(
+                read_all(&mut decompressed) == image,
+                "{compression:?}: content differs"
+            );
             let meta = decompressed.metadata().expect("metadata");
             assert!(
                 meta.blocks() * STAT_BLOCK_SIZE < meta.len(),
                 "{compression:?}: no holes"
+            );
+        }
+    }
+
+    #[test]
+    fn decompress_replaces_old_content() {
+        let image = test_image();
+
+        for compression in all_compressions() {
+            let mut compressed = compress_image(&compression, &image);
+            let mut decompressed = tempfile::tempfile().expect("create decompressed");
+            decompressed
+                .write_all(&vec![OLD_CONTENT_BYTE; IMAGE_LEN + OLD_CONTENT_EXTRA_LEN])
+                .expect("write old content");
+            decompressed.rewind().expect("rewind decompressed");
+
+            compression
+                .decompress(&mut compressed, &mut decompressed)
+                .expect("decompress");
+
+            assert!(
+                read_all(&mut decompressed) == image,
+                "{compression:?}: content differs"
+            );
+        }
+    }
+
+    #[test]
+    fn decompress_rejects_truncated_input() {
+        let image = test_image();
+
+        for compression in all_compressions() {
+            let mut compressed = compress_image(&compression, &image);
+            let len = compressed.metadata().expect("metadata").len();
+            compressed
+                .set_len(len - TRUNCATED_BYTES)
+                .expect("truncate compressed");
+
+            let mut decompressed = tempfile::tempfile().expect("create decompressed");
+            assert!(
+                compression
+                    .decompress(&mut compressed, &mut decompressed)
+                    .is_err(),
+                "{compression:?}: truncated input accepted"
             );
         }
     }

@@ -2,6 +2,9 @@ pub mod bmap;
 pub mod compression;
 pub mod functions;
 mod partition;
+
+/// Granularity at which zero data in an image file is kept as a hole.
+const IMAGE_BLOCK_SIZE: usize = 4096;
 use super::validators::{
     device_update,
     identity::{IdentityConfig, IdentityType, validate_identity},

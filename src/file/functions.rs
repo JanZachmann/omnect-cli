@@ -1,4 +1,4 @@
-use crate::file::partition::SECTOR_SIZE;
+use crate::file::{IMAGE_BLOCK_SIZE, partition::SECTOR_SIZE};
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use std::collections::HashMap;
@@ -11,7 +11,6 @@ use std::str::FromStr;
 use stdext::function_name;
 use uuid::Uuid;
 
-const COMPARE_BLOCK_SIZE: usize = 4096;
 const COPY_CHUNK_SIZE: usize = 1024 * 1024;
 
 #[derive(clap::ValueEnum, Debug, Clone, Eq, Hash, PartialEq)]
@@ -468,12 +467,12 @@ fn write_partition(
             .context("write_partition: cannot read image")?;
 
         let blocks = src[..n]
-            .chunks(COMPARE_BLOCK_SIZE)
-            .zip(dst[..n].chunks(COMPARE_BLOCK_SIZE));
+            .chunks(IMAGE_BLOCK_SIZE)
+            .zip(dst[..n].chunks(IMAGE_BLOCK_SIZE));
         for (i, (s, d)) in blocks.enumerate() {
             if s != d {
                 image
-                    .write_all_at(s, image_offset + pos + (i * COMPARE_BLOCK_SIZE) as u64)
+                    .write_all_at(s, image_offset + pos + (i * IMAGE_BLOCK_SIZE) as u64)
                     .context("write_partition: cannot write image")?;
             }
         }
@@ -483,4 +482,43 @@ fn write_partition(
     image
         .sync_all()
         .context("write_partition: cannot sync image")
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::file::functions::*;
+
+    const PART_NUM: u32 = 1;
+    const PART_START: u64 = 8;
+    const PART_SECTORS: u64 = 64;
+    const OLD_CONTENT_BYTE: u8 = 0xa5;
+    const ZEROED_BLOCK: usize = 2;
+
+    #[test]
+    fn write_partition_writes_block_changed_to_zeros() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join("image.wic");
+        let partition = dir.path().join("partition.img");
+        let image_len = usize::try_from((PART_START + PART_SECTORS) * SECTOR_SIZE).expect("size");
+        let part_offset = usize::try_from(PART_START * SECTOR_SIZE).expect("offset");
+
+        fs::write(&image, vec![OLD_CONTENT_BYTE; image_len]).expect("write image");
+        let mut content = vec![OLD_CONTENT_BYTE; image_len - part_offset];
+        content[ZEROED_BLOCK * IMAGE_BLOCK_SIZE..(ZEROED_BLOCK + 1) * IMAGE_BLOCK_SIZE].fill(0);
+        fs::write(&partition, &content).expect("write partition");
+
+        write_partition(
+            image.to_str().expect("image path"),
+            partition.to_str().expect("partition path"),
+            &PartitionInfo {
+                num: PART_NUM,
+                start: PART_START,
+                count: PART_SECTORS,
+            },
+        )
+        .expect("write partition");
+
+        let written = fs::read(&image).expect("read image");
+        assert!(written[part_offset..] == content[..], "partition differs");
+    }
 }
