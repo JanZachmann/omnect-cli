@@ -33,13 +33,11 @@ RUN <<EOT
     mkdir -p /copy/status.d /copy/usr/lib
 
     executables=(
-        /usr/bin/dd \
         /usr/bin/e2cp \
         /usr/bin/e2mkdir \
         /usr/bin/mcopy \
         /usr/bin/omnect-cli \
         /usr/bin/ssh-keygen \
-        /usr/bin/sync \
         /usr/sbin/fdisk \
     )
 
