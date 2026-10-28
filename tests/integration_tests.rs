@@ -1146,6 +1146,37 @@ fn check_input_bmap_of_another_image_with_the_same_size() {
 }
 
 #[test]
+fn check_chained_commands_with_input_bmap() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_xz_path = tr.to_pathbuf("testfiles/image.wic.xz");
+    let image_path = image_xz_path.with_extension("");
+    tr.to_pathbuf("testfiles/image.wic.bmap");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    let copy_to_image = |image: &Path, output_bmap: bool| {
+        let mut cmd = Command::cargo_bin("omnect-cli").expect("omnect-cli binary");
+        cmd.arg("file")
+            .arg("copy-to-image")
+            .arg("-f")
+            .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+            .arg("-i")
+            .arg(image);
+        if output_bmap {
+            cmd.arg("-b");
+        }
+        cmd.assert()
+    };
+
+    // without -b, the bmap next to the image still has the checksums of the original image
+    copy_to_image(&image_xz_path, false).success();
+    copy_to_image(&image_path, true)
+        .failure()
+        .stderr(predicate::str::contains("without -b changed it"));
+
+    copy_to_image(&image_xz_path, true).success();
+    copy_to_image(&image_path, true).success();
+}
+
+#[test]
 fn check_bmap_generation_wic() {
     let tr = Testrunner::new(function_name!().split("::").last().unwrap());
     let image_path = tr.to_pathbuf("testfiles/image.wic");

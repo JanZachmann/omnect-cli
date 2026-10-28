@@ -167,8 +167,9 @@ pub fn verify_checksums(image_file: &Path, bmap: &Bmap) -> Result<()> {
         let actual = hex(&hasher.finalize());
         anyhow::ensure!(
             actual.eq_ignore_ascii_case(expected.trim()),
-            "verify_checksums: range {range:?} of the image does not match the bmap; \
-             the bmap is for another image, pass the right one with --input-bmap"
+            "verify_checksums: range {range:?} of the image does not match the bmap. It is the \
+             bmap of another image, or of this image before a command without -b changed it. \
+             Pass the right bmap with --input-bmap."
         );
     }
 
