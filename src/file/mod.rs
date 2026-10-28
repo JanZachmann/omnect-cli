@@ -2,6 +2,7 @@ pub mod bmap;
 pub mod compression;
 pub mod functions;
 mod partition;
+pub(crate) mod sparse;
 
 use super::validators::{
     device_update,

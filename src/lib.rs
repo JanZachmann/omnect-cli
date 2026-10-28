@@ -24,7 +24,6 @@ use file::{bmap::Bmap, compression::Compression, functions::FileCopyToParams};
 use log::{error, info};
 use std::{
     fs,
-    io::Read,
     path::{Path, PathBuf},
 };
 use tokio::fs::remove_dir_all;
@@ -196,22 +195,7 @@ fn copy_image(from: &Path, to: &Path) -> Result<()> {
     dst.set_len(len)
         .context("copy_image: cannot set destination size")?;
 
-    // one copy_file_range call copies at most 2 GiB; io::copy repeats it until a segment is done
-    let sparse = libfs::probably_sparse(&src)?;
-    let mut pos = 0;
-    while pos < len {
-        let (data, hole) = if sparse {
-            libfs::next_sparse_segments(&src, &dst, pos)?
-        } else {
-            (pos, len)
-        };
-        let copied = std::io::copy(&mut (&src).take(hole - data), &mut &dst)
-            .context("copy_image: cannot copy data")?;
-        anyhow::ensure!(copied == hole - data, "copy_image: source ended early");
-        pos = hole;
-    }
-
-    Ok(())
+    file::sparse::copy_range(&src, 0, &dst, 0, len)
 }
 
 struct CertInfo {

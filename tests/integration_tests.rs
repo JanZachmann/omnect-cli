@@ -903,6 +903,9 @@ fn check_file_copy(tr: Testrunner, partition: &str) {
 const STAT_BLOCK_SIZE: u64 = 512;
 // content an earlier installation left on the device
 const OLD_CONTENT_BYTE: u8 = 0xa5;
+// a file with a zero range that spans whole image blocks
+const ZERO_BLOCKS_FILE_EDGE: usize = 4096;
+const ZERO_BLOCKS_FILE_ZEROS: usize = 64 * 1024;
 const OTHER_IMAGE_BMAP: &str = "<bmap><ImageSize>4096</ImageSize><BlockSize>4096</BlockSize>\
                                 <BlockMap><Range>0</Range></BlockMap></bmap>";
 
@@ -939,6 +942,16 @@ fn bmap_flash(image: &[u8], bmap: &Bmap) -> Vec<u8> {
     device
 }
 
+fn sparse_copy(from: &Path, to: &Path) {
+    let status = std::process::Command::new("cp")
+        .arg("--sparse=always")
+        .arg(from)
+        .arg(to)
+        .status()
+        .expect("run cp");
+    assert!(status.success(), "sparse copy of the test image failed");
+}
+
 #[test]
 fn check_file_copy_without_input_bmap_maps_whole_image() {
     let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
@@ -970,13 +983,7 @@ fn check_file_copy_keeps_holes() {
     let bmap_path = PathBuf::from(format!("{}.bmap", sparse_path.to_string_lossy()));
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
 
-    let status = std::process::Command::new("cp")
-        .arg("--sparse=always")
-        .arg(&image_path)
-        .arg(&sparse_path)
-        .status()
-        .expect("run cp");
-    assert!(status.success(), "sparse copy of the test image failed");
+    sparse_copy(&image_path, &sparse_path);
 
     Command::cargo_bin("omnect-cli")
         .expect("omnect-cli binary")
@@ -1010,6 +1017,65 @@ fn check_file_copy_keeps_holes() {
         assert!(
             !needed || image_block == device_block,
             "block {block} keeps old content"
+        );
+    }
+}
+
+#[test]
+fn check_file_copy_maps_zero_blocks_of_copied_files() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let input_bmap_path = tr.to_pathbuf("testfiles/image.wic.bmap");
+    let sparse_path = image_path.with_file_name("sparse.wic");
+    let bmap_path = PathBuf::from(format!("{}.bmap", sparse_path.to_string_lossy()));
+    let device_path = tr.pathbuf().join("device.wic");
+    let in_file = tr.pathbuf().join("zero-blocks.bin");
+    let in_content = [
+        vec![0x11; ZERO_BLOCKS_FILE_EDGE],
+        vec![0; ZERO_BLOCKS_FILE_ZEROS],
+        vec![0x22; ZERO_BLOCKS_FILE_EDGE],
+    ]
+    .concat();
+    fs::write(&in_file, &in_content).expect("write input file");
+    sparse_copy(&image_path, &sparse_path);
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-to-image")
+        .arg("-f")
+        .arg(format!("{},factory:/my-file", in_file.to_string_lossy()))
+        .arg("-f")
+        .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&sparse_path)
+        .arg("--input-bmap")
+        .arg(&input_bmap_path)
+        .arg("-b")
+        .assert()
+        .success();
+
+    let image = fs::read(&sparse_path).expect("read image");
+    fs::write(&device_path, bmap_flash(&image, &read_bmap(&bmap_path))).expect("write device");
+
+    for partition in ["factory", "boot"] {
+        let out_file = tr.pathbuf().join(format!("{partition}-out.bin"));
+        Command::cargo_bin("omnect-cli")
+            .expect("omnect-cli binary")
+            .arg("file")
+            .arg("copy-from-image")
+            .arg("-f")
+            .arg(format!(
+                "{partition}:/my-file,{}",
+                out_file.to_string_lossy()
+            ))
+            .arg("-i")
+            .arg(&device_path)
+            .assert()
+            .success();
+        assert!(
+            fs::read(&out_file).expect("read output file") == in_content,
+            "{partition}: file differs after a bmap flash"
         );
     }
 }

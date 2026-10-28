@@ -1,9 +1,10 @@
-use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, partition::SECTOR_SIZE};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, partition::SECTOR_SIZE, sparse};
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::fs;
+use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -414,20 +415,22 @@ fn read_partition(
         return Ok(());
     }
 
-    let mut dd = Command::new("dd");
-    dd.arg(format!("if={image_file}"))
-        .arg(format!("of={partition_file}"))
-        .arg(format!("bs={SECTOR_SIZE}"))
-        .arg(format!("skip={}", partition_info.start))
-        .arg(format!("count={}", partition_info.count))
-        .arg("conv=sparse")
-        .arg("status=none");
-    exec_cmd!(dd);
+    let image =
+        fs::File::open(image_file).context(format!("read_partition: cannot open {image_file}"))?;
+    let partition = fs::File::create(partition_file)
+        .context(format!("read_partition: cannot create {partition_file}"))?;
+    let len = partition_info.count * SECTOR_SIZE;
+    partition
+        .set_len(len)
+        .context("read_partition: cannot set partition file size")?;
 
-    let mut sync = Command::new("sync");
-    exec_cmd!(sync);
-
-    Ok(())
+    sparse::copy_range(
+        &image,
+        partition_info.start * SECTOR_SIZE,
+        &partition,
+        0,
+        len,
+    )
 }
 
 fn write_partition(
@@ -451,7 +454,11 @@ fn write_partition(
         .min(partition_info.count * SECTOR_SIZE);
 
     // Only write blocks that differ: unchanged blocks keep their allocation, so a bmap
-    // created from the result still maps every block the source image mapped.
+    // created from the result still maps every block the source image mapped. A zero block
+    // that a tool wrote into a hole is data in the partition file and must become data in the
+    // image too, else a bmap flash keeps the old content there.
+    let partition_data = sparse::data_ranges(&partition, 0, len)?;
+    let image_data = sparse::data_ranges(&image, image_offset, image_offset + len)?;
     let mut src = vec![0u8; COPY_CHUNK_SIZE];
     let mut dst = vec![0u8; COPY_CHUNK_SIZE];
     let mut pos = 0;
@@ -468,9 +475,13 @@ fn write_partition(
             .chunks(IMAGE_BLOCK_SIZE)
             .zip(dst[..n].chunks(IMAGE_BLOCK_SIZE));
         for (i, (s, d)) in blocks.enumerate() {
-            if s != d {
+            let block_pos = pos + (i * IMAGE_BLOCK_SIZE) as u64;
+            let block = block_pos..block_pos + s.len() as u64;
+            let image_block = image_offset + block.start..image_offset + block.end;
+            if s != d || (has_data(&partition_data, &block) && has_hole(&image_data, &image_block))
+            {
                 image
-                    .write_all_at(s, image_offset + pos + (i * IMAGE_BLOCK_SIZE) as u64)
+                    .write_all_at(s, image_block.start)
                     .context("write_partition: cannot write image")?;
             }
         }
@@ -480,6 +491,18 @@ fn write_partition(
     image
         .sync_all()
         .context("write_partition: cannot sync image")
+}
+
+fn has_data(data_ranges: &[Range<u64>], block: &Range<u64>) -> bool {
+    let i = data_ranges.partition_point(|r| r.end <= block.start);
+    data_ranges.get(i).is_some_and(|r| r.start < block.end)
+}
+
+fn has_hole(data_ranges: &[Range<u64>], block: &Range<u64>) -> bool {
+    let i = data_ranges.partition_point(|r| r.end <= block.start);
+    !data_ranges
+        .get(i)
+        .is_some_and(|r| r.start <= block.start && block.end <= r.end)
 }
 
 #[cfg(test)]
@@ -549,5 +572,42 @@ mod tests {
         .expect("write partition");
 
         assert_eq!(allocated(), before, "unchanged zero blocks were written");
+    }
+
+    #[test]
+    fn write_partition_maps_zero_block_written_into_a_hole() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join("image.wic");
+        let partition = dir.path().join("partition.img");
+        let image_file = fs::File::create(&image).expect("create image");
+        image_file
+            .set_len((PART_START + PART_SECTORS) * SECTOR_SIZE)
+            .expect("set image size");
+        let partition_file = fs::File::create(&partition).expect("create partition");
+        partition_file
+            .set_len(PART_SECTORS * SECTOR_SIZE)
+            .expect("set partition size");
+        let block = (ZEROED_BLOCK * IMAGE_BLOCK_SIZE) as u64;
+        partition_file
+            .write_all_at(&[0; IMAGE_BLOCK_SIZE], block)
+            .expect("write zero block");
+
+        write_partition(
+            image.to_str().expect("image path"),
+            partition.to_str().expect("partition path"),
+            &partition_info(),
+        )
+        .expect("write partition");
+
+        let block = PART_START * SECTOR_SIZE + block;
+        assert_eq!(
+            sparse::data_ranges(
+                &image_file,
+                0,
+                image_file.metadata().expect("metadata").len()
+            )
+            .expect("data ranges"),
+            vec![block..block + IMAGE_BLOCK_SIZE as u64]
+        );
     }
 }

@@ -1529,21 +1529,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
-name = "libfs"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b79c3145dcaad30b6d7b1e30c9d2d23799b882e9a2e9d1fc7bcc0699c5279ff9"
-dependencies = [
- "cfg-if",
- "libc",
- "linux-raw-sys",
- "log",
- "rustix",
- "thiserror 2.0.21",
- "xattr",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1782,7 +1767,6 @@ dependencies = [
  "hmac",
  "httpmock",
  "keyring-core",
- "libfs",
  "log",
  "mbrman",
  "num_cpus",
@@ -1794,6 +1778,7 @@ dependencies = [
  "reqwest 0.13.5",
  "ring",
  "roxmltree",
+ "rustix",
  "serde",
  "serde_json",
  "serde_path_to_error",
