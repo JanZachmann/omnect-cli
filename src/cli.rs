@@ -37,6 +37,9 @@ pub enum Docker {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -58,6 +61,9 @@ pub enum File {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -91,6 +97,9 @@ pub enum IdentityConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -115,6 +124,9 @@ pub enum IdentityConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -133,6 +145,9 @@ pub enum IdentityConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -157,6 +172,9 @@ pub enum IdentityConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -175,6 +193,9 @@ pub enum IdentityConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -199,6 +220,9 @@ pub enum IdentityConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -220,6 +244,9 @@ pub enum IotHubDeviceUpdate {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,
@@ -339,6 +366,9 @@ pub enum SshConfig {
         /// optional: generate bmap file (currently not working in docker image)
         #[arg(short = 'b', long = "generate-bmap-file")]
         generate_bmap: bool,
+        /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+        #[arg(long = "bmap")]
+        bmap: Option<PathBuf>,
         /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
         #[arg(short = 'p', long = "pack-image", value_enum)]
         compress_image: Option<Compression>,

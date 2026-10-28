@@ -51,7 +51,7 @@
 - `src/image.rs` — firmware image architecture detection (ARM32/ARM64/x86_64)
 - `src/file/mod.rs` — high-level image operations: identity config, certs, hostname patching
 - `src/file/functions.rs` — partition read via dd, modify via e2cp/mcopy, write back of changed blocks only
-- `src/file/bmap.rs` — bmap generation; allocates ext4 journals first (needs `debugfs`)
+- `src/file/bmap.rs` — input bmap lookup; maps its ranges in the working image, or the whole image without one; bmap generation via `bmaptool create`
 - `src/file/partition.rs` — GPT/MBR partition table parsing
 - `src/file/compression.rs` — xz/bzip2/gzip compress/decompress with auto-detection
 - `src/validators/` — validation for identity config (TOML), device-update config (JSON), SSH keys

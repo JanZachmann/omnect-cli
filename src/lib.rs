@@ -20,8 +20,8 @@ use cli::{
     IotHubDeviceUpdate::{self, SetDeviceConfig as IotHubDeviceUpdateSet},
     SshConfig::{SetCertificate, SetConnection},
 };
-use file::{compression::Compression, functions::FileCopyToParams};
-use log::error;
+use file::{bmap::Bmap, compression::Compression, functions::FileCopyToParams};
+use log::{error, info};
 use std::{fs, io::Read, path::Path, path::PathBuf};
 use tokio::fs::remove_dir_all;
 use uuid::Uuid;
@@ -50,6 +50,7 @@ impl Drop for TempDirGuard {
 
 fn run_image_command<F>(
     image_file: PathBuf,
+    input_bmap: Option<PathBuf>,
     generate_bmap: bool,
     target_compression: Option<Compression>,
     command: F,
@@ -70,6 +71,7 @@ where
         image_file.to_str().context("cannot get image file path")?
     );
 
+    let input_bmap = file::bmap::find_input_bmap(&image_file, input_bmap.as_deref())?;
     let mut dest_image_file = image_file.clone();
 
     // create /tmp/{uuid}/ and copy image into
@@ -98,6 +100,22 @@ where
             image_file, tmp_image_file
         ))?;
     }
+
+    let bmap = match input_bmap {
+        Some(path) => {
+            info!("keep the ranges of {} mapped", path.display());
+            Bmap::read(&path)?
+        }
+        None => {
+            info!("no input bmap found: every block of the image gets mapped");
+            Bmap::whole_image(
+                fs::metadata(&tmp_image_file)
+                    .context("run_image_command: cannot get image size")?
+                    .len(),
+            )
+        }
+    };
+    file::bmap::allocate_ranges(&tmp_image_file, &bmap)?;
 
     // run command
     command(&tmp_image_file)?;
@@ -225,8 +243,9 @@ pub fn run() -> Result<()> {
             partition,
             dest,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img| {
+        }) => run_image_command(image, bmap, generate_bmap, compress_image, |img| {
             anyhow::ensure!(
                 dest.to_string_lossy().ends_with(".tar.gz"),
                 format!(
@@ -265,8 +284,9 @@ pub fn run() -> Result<()> {
             image,
             payload,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img| {
+        }) => run_image_command(image, bmap, generate_bmap, compress_image, |img| {
             file::set_identity_config(&config, img, payload.as_deref())
         })?,
         Command::Identity(SetDeviceCertificate {
@@ -276,6 +296,7 @@ pub fn run() -> Result<()> {
             device_id,
             days,
             generate_bmap,
+            bmap,
             compress_image,
         }) => {
             let cert_info = create_image_cert(
@@ -291,7 +312,7 @@ pub fn run() -> Result<()> {
             )
             .context("set_device_certificate: could not create certificate")?;
 
-            run_image_command(image, generate_bmap, compress_image, |img| {
+            run_image_command(image, bmap, generate_bmap, compress_image, |img| {
                 file::set_device_cert(
                     Some(&intermediate_full_chain_cert),
                     &cert_info.cert_path,
@@ -307,6 +328,7 @@ pub fn run() -> Result<()> {
             device_id,
             days,
             generate_bmap,
+            bmap,
             compress_image,
         }) => {
             let cert_info = create_image_cert(
@@ -322,7 +344,7 @@ pub fn run() -> Result<()> {
             )
             .context("set_edge_ca_certificate: could not create certificate")?;
 
-            run_image_command(image, generate_bmap, compress_image, |img| {
+            run_image_command(image, bmap, generate_bmap, compress_image, |img| {
                 file::set_edge_ca_cert(
                     Some(&intermediate_full_chain_cert),
                     &cert_info.cert_path,
@@ -336,8 +358,9 @@ pub fn run() -> Result<()> {
             device_key: device_key_pem,
             image,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img| {
+        }) => run_image_command(image, bmap, generate_bmap, compress_image, |img| {
             file::set_device_cert(None, &device_cert_pem, &device_key_pem, img)
         })?,
         Command::Identity(SetIotedgeGatewayConfig {
@@ -347,41 +370,65 @@ pub fn run() -> Result<()> {
             device_identity,
             device_identity_key,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img: &PathBuf| {
-            file::set_iotedge_gateway_config(
-                &config,
-                img,
-                &root_ca,
-                &device_identity,
-                &device_identity_key,
-            )
-        })?,
+        }) => run_image_command(
+            image,
+            bmap,
+            generate_bmap,
+            compress_image,
+            |img: &PathBuf| {
+                file::set_iotedge_gateway_config(
+                    &config,
+                    img,
+                    &root_ca,
+                    &device_identity,
+                    &device_identity_key,
+                )
+            },
+        )?,
         Command::Identity(SetIotLeafSasConfig {
             config,
             image,
             root_ca,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img: &PathBuf| {
-            file::set_iot_leaf_sas_config(&config, img, &root_ca)
-        })?,
+        }) => run_image_command(
+            image,
+            bmap,
+            generate_bmap,
+            compress_image,
+            |img: &PathBuf| file::set_iot_leaf_sas_config(&config, img, &root_ca),
+        )?,
         Command::Ssh(SetCertificate {
             image,
             root_ca,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img: &PathBuf| {
-            file::set_ssh_tunnel_certificate(img, &root_ca)
-        })?,
+        }) => run_image_command(
+            image,
+            bmap,
+            generate_bmap,
+            compress_image,
+            |img: &PathBuf| file::set_ssh_tunnel_certificate(img, &root_ca),
+        )?,
         Command::IotHubDeviceUpdate(IotHubDeviceUpdateSet {
             iot_hub_device_update_config,
             image,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img: &PathBuf| {
-            file::set_iot_hub_device_update_config(&iot_hub_device_update_config, img)
-        })?,
+        }) => run_image_command(
+            image,
+            bmap,
+            generate_bmap,
+            compress_image,
+            |img: &PathBuf| {
+                file::set_iot_hub_device_update_config(&iot_hub_device_update_config, img)
+            },
+        )?,
         Command::IotHubDeviceUpdate(IotHubDeviceUpdate::ImportUpdate {
             import_manifest: import_manifest_path,
             storage_container_name,
@@ -495,14 +542,19 @@ pub fn run() -> Result<()> {
             file_copy_params,
             image,
             generate_bmap,
+            bmap,
             compress_image,
-        }) => run_image_command(image, generate_bmap, compress_image, |img: &PathBuf| {
-            file::copy_to_image(&file_copy_params, img)
-        })?,
+        }) => run_image_command(
+            image,
+            bmap,
+            generate_bmap,
+            compress_image,
+            |img: &PathBuf| file::copy_to_image(&file_copy_params, img),
+        )?,
         Command::File(CopyFromImage {
             file_copy_params,
             image,
-        }) => run_image_command(image, false, None, |img: &PathBuf| {
+        }) => run_image_command(image, None, false, None, |img: &PathBuf| {
             file::copy_from_image(&file_copy_params, img)
         })?,
     }

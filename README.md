@@ -184,6 +184,12 @@ omnect-cli file copy-to-image --help
 - File permissions: inject `systemd-tmpfiles.d`
 - Wifi: inject `wpa_supplicant-wlan0.conf`
 
+## bmap files
+
+Commands that change an image create a bmap file with `-b`. The bmap of the input image is the base for it: `omnect-cli` takes `<image>.bmap` or the bmap of the uncompressed image next to the image, e.g. `my-image.wic.bmap` for `my-image.wic.xz` as the Yocto build creates it, or the file given with `--bmap`. Every range the input bmap maps stays mapped, also when it holds only zeros, so a bmap-based flash overwrites what an earlier installation left there (partition table entries, FAT, ext4 journals). The created bmap maps these ranges plus the blocks `omnect-cli` changed.
+
+Without an input bmap, the created bmap maps the whole image, and a flash writes every block.
+
 ## ssh tunnel
 
 ### Inject ssh tunnel credentials

@@ -1,4 +1,4 @@
-use crate::file::{IMAGE_BLOCK_SIZE, partition::SECTOR_SIZE};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, partition::SECTOR_SIZE};
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use std::collections::HashMap;
@@ -10,8 +10,6 @@ use std::process::Command;
 use std::str::FromStr;
 use stdext::function_name;
 use uuid::Uuid;
-
-const COPY_CHUNK_SIZE: usize = 1024 * 1024;
 
 #[derive(clap::ValueEnum, Debug, Clone, Eq, Hash, PartialEq)]
 #[clap(rename_all = "verbatim")]

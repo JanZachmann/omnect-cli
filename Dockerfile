@@ -15,7 +15,6 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     bmap-tools \
     ca-certificates \
-    e2fsprogs \
     e2tools \
     fdisk \
     keychain \
