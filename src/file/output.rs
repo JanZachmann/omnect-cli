@@ -7,9 +7,9 @@ use std::{
 
 const TMP_DIR_PREFIX: &str = ".omnect-cli-";
 
-/// Returns `explicit`, else `image` without the extension of its `source` compression, with the
-/// extension of `target` appended. Fails if `explicit` has no extension of `target`, or a
-/// compression extension while `target` is none.
+/// Returns `explicit`, else `image` if it has an extension of `target`, else `image` without the
+/// extension of its `source` compression, with the extension of `target` appended. Fails if
+/// `explicit` has no extension of `target`, or a compression extension while `target` is none.
 pub fn output_image(
     image: &Path,
     source: Option<&Compression>,
@@ -31,6 +31,9 @@ pub fn output_image(
             ),
         }
         return Ok(path.to_path_buf());
+    }
+    if target.is_some_and(|c| c.matches_extension(image)) {
+        return Ok(image.to_path_buf());
     }
 
     let mut output = image.to_path_buf();
@@ -170,6 +173,23 @@ mod tests {
         assert_eq!(output(image_xz, Some(&xz), None), image);
         assert_eq!(output(image, None, Some(&xz)), image_xz);
         assert_eq!(output(image_xz, Some(&xz), Some(&xz)), image_xz);
+    }
+
+    #[test]
+    fn output_image_keeps_every_extension_of_the_same_compression() {
+        for (image, compression) in [
+            ("image.wic.gz", Compression::gzip),
+            ("image.wic.gzip", Compression::gzip),
+            ("image.wic.bz2", Compression::bzip2),
+            ("image.wic.bzip2", Compression::bzip2),
+        ] {
+            let image = Path::new(image);
+            assert_eq!(
+                output_image(image, Some(&compression), Some(&compression), None)
+                    .expect("output image"),
+                image
+            );
+        }
     }
 
     #[test]
