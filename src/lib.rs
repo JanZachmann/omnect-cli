@@ -28,45 +28,11 @@ use file::{
     output::{check_conflicts, output_image, replace},
     sparse,
 };
-use log::{error, info};
+use log::info;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use tokio::fs::remove_dir_all;
-use uuid::Uuid;
-
-/// A new directory `/tmp/{uuid}`, removed on drop.
-struct TempDirGuard(PathBuf);
-
-impl TempDirGuard {
-    fn new() -> Result<Self> {
-        let tmp_dir = PathBuf::from(format!("/tmp/{}", Uuid::new_v4()));
-        fs::create_dir_all(&tmp_dir).context(format!(
-            "TempDirGuard::new: cannot create {}",
-            tmp_dir.display()
-        ))?;
-        Ok(Self(tmp_dir))
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            error!("cannot create tokio runtime");
-            return;
-        };
-
-        rt.block_on(async {
-            if let Err(e) = remove_dir_all(self.0.clone()).await {
-                error!("cannot remove tmp dir: {e}")
-            }
-        })
-    }
-}
 
 fn run_image_command<F>(image_file: PathBuf, output: ImageOutput, command: F) -> Result<()>
 where
@@ -119,8 +85,8 @@ where
     if source_compression.is_none() {
         verify_input_bmap(&image_file)?;
     }
-    let tmp_dir = TempDirGuard::new()?;
-    let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
+    let tmp_dir = tempfile::tempdir().context("cannot create a temp dir")?;
+    let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), tmp_dir.path())?;
     if source_compression.is_some() {
         verify_input_bmap(&tmp_image_file)?;
     }
@@ -183,9 +149,9 @@ where
 {
     ensure_image_exists(&image_file)?;
 
-    let tmp_dir = TempDirGuard::new()?;
+    let tmp_dir = tempfile::tempdir().context("cannot create a temp dir")?;
     let source_compression = Compression::from_file(&image_file)?;
-    let tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
+    let tmp_image_file = temp_image(&image_file, source_compression.as_ref(), tmp_dir.path())?;
 
     command(&tmp_image_file)
 }
