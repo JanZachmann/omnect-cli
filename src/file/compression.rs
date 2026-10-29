@@ -1,11 +1,11 @@
-use crate::file::{IMAGE_BLOCK_SIZE, is_zero};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, is_zero};
 use anyhow::{Context, Result};
 use filemagic::Magic;
 use log::debug;
 use std::{
     env,
     fs::File,
-    io::{Seek, SeekFrom, Write},
+    io::{BufWriter, IntoInnerError, Read, Seek, SeekFrom, Write},
     os::unix::fs::FileExt,
     path::{Path, PathBuf},
     str::FromStr,
@@ -81,24 +81,19 @@ impl Compression {
         source: &mut std::fs::File,
         destination: &mut std::fs::File,
     ) -> std::io::Result<u64> {
-        let sparse = SparseWriter::new(destination)?;
-        // only `finish` detects a truncated or corrupt stream
-        let (bytes_read, sparse) = match &self {
-            Compression::bzip2 => {
-                let mut dec = bzip2::write::BzDecoder::new(sparse);
-                (std::io::copy(source, &mut dec)?, dec.finish()?)
-            }
-            Compression::gzip => {
-                let mut dec = flate2::write::GzDecoder::new(sparse);
-                (std::io::copy(source, &mut dec)?, dec.finish()?)
-            }
-            Compression::xz { .. } => {
-                let mut dec = xz2::write::XzDecoder::new(sparse);
-                (std::io::copy(source, &mut dec)?, dec.finish()?)
-            }
+        // the multi decoders also read concatenated streams, as pbzip2 writes them
+        let mut decoder: Box<dyn Read + '_> = match &self {
+            Compression::bzip2 => Box::new(bzip2::read::MultiBzDecoder::new(source)),
+            Compression::gzip => Box::new(flate2::read::MultiGzDecoder::new(source)),
+            Compression::xz { .. } => Box::new(xz2::read::XzDecoder::new_multi_decoder(source)),
         };
-        sparse.finish()?;
-        Ok(bytes_read)
+        let mut sparse = BufWriter::with_capacity(COPY_CHUNK_SIZE, SparseWriter::new(destination)?);
+        let bytes_written = std::io::copy(&mut decoder, &mut sparse)?;
+        sparse
+            .into_inner()
+            .map_err(IntoInnerError::into_error)?
+            .finish()?;
+        Ok(bytes_written)
     }
 
     fn marker(&self) -> &'static str {
@@ -208,26 +203,35 @@ impl Write for SparseWriter<'_> {
     }
 }
 
-pub fn decompress(image_file_name: &PathBuf, compression: &Compression) -> Result<PathBuf> {
-    let mut new_image_file = PathBuf::from(image_file_name);
-
-    if new_image_file
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| compression.extensions().contains(&ext))
-    {
-        new_image_file.set_extension("");
-    }
-    // creating the destination would truncate the source
+/// Decompresses `image_file_name` into `dest_dir`, named without the compression extension.
+pub fn decompress(
+    image_file_name: &Path,
+    compression: &Compression,
+    dest_dir: &Path,
+) -> Result<PathBuf> {
     anyhow::ensure!(
-        new_image_file != *image_file_name,
+        image_file_name
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| compression.extensions().contains(&ext)),
         "decompress: {} has no {:?} file extension",
         image_file_name.display(),
         compression.extensions()
     );
+    let new_image_file = dest_dir.join(
+        image_file_name
+            .file_stem()
+            .context("decompress: cannot get image file name")?,
+    );
 
-    let mut destination = File::create(&new_image_file)?;
-    let mut source = File::open(image_file_name)?;
+    let mut source = File::open(image_file_name).context(format!(
+        "decompress: cannot open {}",
+        image_file_name.display()
+    ))?;
+    let mut destination = File::create(&new_image_file).context(format!(
+        "decompress: cannot create {}",
+        new_image_file.display()
+    ))?;
     debug!("decompress {image_file_name:?} to {new_image_file:?}");
     let bytes_written = compression.decompress(&mut source, &mut destination)?;
     debug!("image::decompress: copied {} bytes.", bytes_written);
@@ -364,6 +368,32 @@ mod tests {
     }
 
     #[test]
+    fn decompress_reads_concatenated_streams() {
+        let image = test_image();
+        let (first, second) = image.split_at(DATA_OFFSET);
+
+        for compression in all_compressions() {
+            let mut concatenated = tempfile::tempfile().expect("create concatenated");
+            for part in [first, second] {
+                let mut compressed = compress_image(&compression, part);
+                concatenated
+                    .write_all(&read_all(&mut compressed))
+                    .expect("write stream");
+            }
+            concatenated.rewind().expect("rewind concatenated");
+
+            let mut decompressed = tempfile::tempfile().expect("create decompressed");
+            compression
+                .decompress(&mut concatenated, &mut decompressed)
+                .expect("decompress");
+            assert!(
+                read_all(&mut decompressed) == image,
+                "{compression:?}: content differs"
+            );
+        }
+    }
+
+    #[test]
     fn decompress_file_strips_every_extension_of_the_compression() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = test_image();
@@ -374,7 +404,7 @@ mod tests {
                 let mut compressed = compress_image(&compression, &image);
                 fs::write(&path, read_all(&mut compressed)).expect("write compressed");
 
-                let decompressed = decompress(&path, &compression).expect("decompress");
+                let decompressed = decompress(&path, &compression, dir.path()).expect("decompress");
                 assert_eq!(decompressed, dir.path().join("image.wic"));
                 assert!(
                     fs::read(&decompressed).expect("read decompressed") == image,
@@ -394,7 +424,7 @@ mod tests {
         let content = read_all(&mut compressed);
         fs::write(&path, &content).expect("write compressed");
 
-        assert!(decompress(&path, &compression).is_err());
+        assert!(decompress(&path, &compression, dir.path()).is_err());
         assert!(
             fs::read(&path).expect("read compressed") == content,
             "source was changed"

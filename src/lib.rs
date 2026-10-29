@@ -196,18 +196,14 @@ fn temp_image(
     source_compression: Option<&Compression>,
     tmp_dir: &Path,
 ) -> Result<PathBuf> {
-    let tmp_image_file = tmp_dir.join(
-        image_file
-            .file_name()
-            .context("cannot get image file name")?,
-    );
-
     match source_compression {
-        Some(c) => {
-            std::fs::copy(image_file, &tmp_image_file)?;
-            compression::decompress(&tmp_image_file, c)
-        }
+        Some(c) => compression::decompress(image_file, c, tmp_dir),
         None => {
+            let tmp_image_file = tmp_dir.join(
+                image_file
+                    .file_name()
+                    .context("cannot get image file name")?,
+            );
             copy_image(image_file, &tmp_image_file).context(format!(
                 "error: copy_image({:?}, {:?})",
                 image_file, tmp_image_file
