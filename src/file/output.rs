@@ -1,9 +1,14 @@
 use crate::file::{bmap, compression::Compression};
 use anyhow::{Context, Result};
+use log::warn;
 use std::{
-    fs,
+    collections::BTreeSet,
+    fs::{self, File},
+    io::ErrorKind,
+    iter,
     path::{Path, PathBuf},
 };
+use tempfile::TempDir;
 
 const TMP_DIR_PREFIX: &str = ".omnect-cli-";
 
@@ -88,32 +93,89 @@ pub fn check_conflicts(
     Ok(())
 }
 
-/// Writes `dest` as a new file in its directory and renames it, so `dest` stays unchanged if
-/// `write` fails. A symlink is followed, and an existing `dest` keeps its permissions.
-pub fn replace(dest: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
-    let dest = resolve(dest)?;
-    let dir = dest
-        .parent()
-        .context(format!("{} has no directory", dest.display()))?;
-    let tmp_dir = tempfile::Builder::new()
-        .prefix(TMP_DIR_PREFIX)
-        .tempdir_in(dir)
-        .context(format!("cannot create a temp dir in {}", dir.display()))?;
-    let tmp_file = tmp_dir.path().join(
-        dest.file_name()
-            .context(format!("{} has no file name", dest.display()))?,
-    );
+/// A new file in the directory of its destination, which `commit` renames to the destination.
+/// Until then the destination stays unchanged.
+pub struct Staged {
+    _tmp_dir: TempDir,
+    file: PathBuf,
+    dest: PathBuf,
+}
 
-    write(&tmp_file)?;
-    if let Ok(metadata) = fs::metadata(&dest) {
-        fs::set_permissions(&tmp_file, metadata.permissions())
-            .context(format!("cannot set permissions of {}", tmp_file.display()))?;
+impl Staged {
+    /// Writes and syncs the new file for `dest`. A symlink is followed, and an existing `dest`
+    /// keeps its permissions.
+    pub fn write(dest: &Path, write: impl FnOnce(&mut File) -> Result<()>) -> Result<Self> {
+        let dest = resolve(dest)?;
+        let dir = dest
+            .parent()
+            .context(format!("{} has no directory", dest.display()))?;
+        let tmp_dir = tempfile::Builder::new()
+            .prefix(TMP_DIR_PREFIX)
+            .tempdir_in(dir)
+            .context(format!("cannot create a temp dir in {}", dir.display()))?;
+        let file = tmp_dir.path().join(
+            dest.file_name()
+                .context(format!("{} has no file name", dest.display()))?,
+        );
+
+        let mut handle =
+            File::create(&file).context(format!("cannot create {}", file.display()))?;
+        write(&mut handle)?;
+        if let Ok(metadata) = fs::metadata(&dest) {
+            handle
+                .set_permissions(metadata.permissions())
+                .context(format!("cannot set permissions of {}", file.display()))?;
+        }
+        // the handle that wrote the data also gets the write errors
+        handle
+            .sync_all()
+            .context(format!("cannot sync {}", file.display()))?;
+
+        Ok(Self {
+            _tmp_dir: tmp_dir,
+            file,
+            dest,
+        })
     }
-    fs::rename(&tmp_file, &dest).context(format!(
-        "cannot rename {} to {}",
-        tmp_file.display(),
-        dest.display()
-    ))
+
+    fn rename(&self) -> Result<()> {
+        fs::rename(&self.file, &self.dest).context(format!(
+            "cannot rename {} to {}",
+            self.file.display(),
+            self.dest.display()
+        ))
+    }
+}
+
+/// Renames the staged `image` and its `bmap`, then syncs their directories, so the renames are
+/// not lost on a power loss. The old bmap is removed before the image is renamed, so if renaming
+/// the bmap fails, no bmap is left that does not match the new image.
+pub fn commit(image: Staged, bmap: Option<Staged>) -> Result<()> {
+    if let Some(bmap) = &bmap {
+        match fs::remove_file(&bmap.dest) {
+            Err(e) if e.kind() != ErrorKind::NotFound => {
+                return Err(e).context(format!("cannot remove {}", bmap.dest.display()));
+            }
+            _ => {}
+        }
+    }
+    image.rename()?;
+    if let Some(bmap) = &bmap {
+        bmap.rename()?;
+    }
+
+    let dirs: BTreeSet<_> = iter::once(&image)
+        .chain(&bmap)
+        .filter_map(|staged| staged.dest.parent())
+        .collect();
+    for dir in dirs {
+        // both files are complete already, only a power loss could undo the rename
+        if let Err(e) = File::open(dir).and_then(|dir| dir.sync_all()) {
+            warn!("cannot sync {}: {e}", dir.display());
+        }
+    }
+
+    Ok(())
 }
 
 fn same_file(a: &Path, b: &Path) -> Result<bool> {
@@ -142,7 +204,10 @@ fn resolve(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use crate::file::output::*;
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::{
+        io::Write,
+        os::unix::fs::{PermissionsExt, symlink},
+    };
 
     const IMAGE: &str = "image.wic";
     const IMAGE_XZ: &str = "image.wic.xz";
@@ -347,15 +412,19 @@ mod tests {
         assert!(check_conflicts(&image_xz, &image, false, true, None).is_err());
     }
 
+    fn stage(dest: &Path, content: &'static [u8]) -> Staged {
+        Staged::write(dest, |file| Ok(file.write_all(content)?)).expect("stage")
+    }
+
     #[test]
-    fn replace_keeps_dest_when_write_fails() {
+    fn staged_write_keeps_dest_when_write_fails() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = dir.path().join(IMAGE);
         fs::write(&image, OLD_CONTENT).expect("write image");
 
         assert!(
-            replace(&image, |tmp| {
-                fs::write(tmp, NEW_CONTENT).expect("write tmp");
+            Staged::write(&image, |file| {
+                file.write_all(NEW_CONTENT).expect("write file");
                 anyhow::bail!("write failed")
             })
             .is_err()
@@ -369,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_keeps_permissions_and_symlink() {
+    fn staged_commit_keeps_permissions_and_symlink() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let image = dir.path().join(IMAGE);
         let link = dir.path().join(OTHER_IMAGE);
@@ -378,7 +447,7 @@ mod tests {
             .expect("set permissions");
         symlink(&image, &link).expect("create symlink");
 
-        replace(&link, |tmp| Ok(fs::write(tmp, NEW_CONTENT)?)).expect("replace");
+        commit(stage(&link, NEW_CONTENT), None).expect("commit");
 
         assert!(link.is_symlink());
         assert_eq!(fs::read(&image).expect("read image"), NEW_CONTENT);
@@ -386,6 +455,42 @@ mod tests {
             fs::metadata(&image).expect("metadata").permissions().mode() & MODE_MASK,
             IMAGE_MODE
         );
+    }
+
+    #[test]
+    fn commit_leaves_no_old_bmap_when_the_bmap_rename_fails() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join(IMAGE);
+        let image_bmap = bmap::bmap_path(&image);
+        fs::write(&image, OLD_CONTENT).expect("write image");
+        fs::write(&image_bmap, OLD_CONTENT).expect("write bmap");
+
+        let staged_bmap = stage(&image_bmap, NEW_CONTENT);
+        fs::remove_file(&staged_bmap.file).expect("remove staged bmap");
+
+        assert!(commit(stage(&image, NEW_CONTENT), Some(staged_bmap)).is_err());
+        assert_eq!(fs::read(&image).expect("read image"), NEW_CONTENT);
+        assert!(!image_bmap.exists());
+    }
+
+    #[test]
+    fn commit_replaces_the_target_of_a_symlinked_bmap() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join(IMAGE);
+        let image_bmap = bmap::bmap_path(&image);
+        let target_bmap = dir.path().join("target.bmap");
+        fs::write(&image, OLD_CONTENT).expect("write image");
+        fs::write(&target_bmap, OLD_CONTENT).expect("write bmap");
+        symlink(&target_bmap, &image_bmap).expect("create symlink");
+
+        commit(
+            stage(&image, NEW_CONTENT),
+            Some(stage(&image_bmap, NEW_CONTENT)),
+        )
+        .expect("commit");
+
+        assert!(image_bmap.is_symlink());
+        assert_eq!(fs::read(&target_bmap).expect("read bmap"), NEW_CONTENT);
     }
 
     #[test]

@@ -87,10 +87,17 @@ pub fn copy_range(
 pub fn copy_to_new_file(src: &File, src_offset: u64, dst: &Path, len: u64) -> Result<()> {
     let dst =
         File::create(dst).context(format!("copy_to_new_file: cannot create {}", dst.display()))?;
-    dst.set_len(len)
-        .context("copy_to_new_file: cannot set destination size")?;
 
-    copy_range(src, src_offset, &dst, 0, len)
+    copy_to_empty_file(src, src_offset, &dst, len)
+}
+
+/// Sets the size of the empty `dst` to `len` and copies `len` bytes of `src` at `src_offset`
+/// into it. Holes of `src` stay holes in `dst`.
+pub fn copy_to_empty_file(src: &File, src_offset: u64, dst: &File, len: u64) -> Result<()> {
+    dst.set_len(len)
+        .context("copy_to_empty_file: cannot set destination size")?;
+
+    copy_range(src, src_offset, dst, 0, len)
 }
 
 #[cfg(test)]

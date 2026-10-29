@@ -239,14 +239,19 @@ pub fn decompress(
     Ok(new_image_file)
 }
 
-pub fn compress(image_file_name: &PathBuf, compression: &Compression) -> Result<PathBuf> {
-    let new_image_file = compression.compressed_path(image_file_name);
-    let mut destination = File::create(&new_image_file)?;
-    let mut source = File::open(image_file_name)?;
-    debug!("compress {image_file_name:?} to {new_image_file:?}");
-    let bytes_written = compression.compress(&mut source, &mut destination)?;
+pub fn compress(
+    image_file_name: &Path,
+    compression: &Compression,
+    destination: &mut File,
+) -> Result<()> {
+    let mut source = File::open(image_file_name).context(format!(
+        "compress: cannot open {}",
+        image_file_name.display()
+    ))?;
+    debug!("compress {image_file_name:?}");
+    let bytes_written = compression.compress(&mut source, destination)?;
     debug!("image::compress: copied {} bytes.", bytes_written);
-    Ok(new_image_file)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -25,12 +25,12 @@ use file::{
     bmap::{self, Bmap},
     compression::{self, Compression},
     functions::FileCopyToParams,
-    output::{check_conflicts, output_image, replace},
+    output::{self, Staged, check_conflicts, output_image},
     sparse,
 };
 use log::info;
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -86,7 +86,7 @@ where
         verify_input_bmap(&image_file)?;
     }
     let tmp_dir = tempfile::tempdir().context("cannot create a temp dir")?;
-    let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), tmp_dir.path())?;
+    let tmp_image_file = temp_image(&image_file, source_compression.as_ref(), tmp_dir.path())?;
     if source_compression.is_some() {
         verify_input_bmap(&tmp_image_file)?;
     }
@@ -107,31 +107,23 @@ where
         )?;
     }
 
-    // if applicable compress image
-    if let Some(c) = target_compression {
-        tmp_image_file = compression::compress(&tmp_image_file, &c)?;
-        replace(&dest_image_file, |dest| {
-            fs::copy(&tmp_image_file, dest)
-                .map(drop)
-                .context(format!("cannot copy {tmp_image_file:?} to {dest:?}"))
-        })?;
-    } else {
-        replace(&dest_image_file, |dest| {
-            copy_image(&tmp_image_file, dest)
-                .context(format!("cannot copy {tmp_image_file:?} to {dest:?}"))
-        })?;
-    }
+    let image = Staged::write(&dest_image_file, |dest| match &target_compression {
+        Some(c) => compression::compress(&tmp_image_file, c, dest),
+        None => copy_image(&tmp_image_file, dest),
+    })?;
+    let bmap = output_bmap
+        .then(|| {
+            Staged::write(&bmap::bmap_path(&dest_image_file), |dest| {
+                let mut src = fs::File::open(&tmp_bmap)
+                    .context(format!("cannot open {}", tmp_bmap.display()))?;
+                io::copy(&mut src, dest)
+                    .map(drop)
+                    .context(format!("cannot copy {}", tmp_bmap.display()))
+            })
+        })
+        .transpose()?;
 
-    // copy the bmap last, so it never describes an image that was not written back
-    if output_bmap {
-        replace(&bmap::bmap_path(&dest_image_file), |dest| {
-            fs::copy(&tmp_bmap, dest)
-                .map(drop)
-                .context(format!("cannot copy {tmp_bmap:?} to {dest:?}"))
-        })?;
-    }
-
-    Ok(())
+    output::commit(image, bmap)
 }
 
 fn input_bmap_error(path: &Path) -> String {
@@ -181,7 +173,9 @@ fn temp_image(
                     .file_name()
                     .context("cannot get image file name")?,
             );
-            copy_image(image_file, &tmp_image_file).context(format!(
+            let tmp_image = fs::File::create(&tmp_image_file)
+                .context(format!("cannot create {}", tmp_image_file.display()))?;
+            copy_image(image_file, &tmp_image).context(format!(
                 "error: copy_image({:?}, {:?})",
                 image_file, tmp_image_file
             ))?;
@@ -190,15 +184,15 @@ fn temp_image(
     }
 }
 
-/// Copies `from` to `to` and keeps the holes of a sparse `from`.
-fn copy_image(from: &Path, to: &Path) -> Result<()> {
+/// Copies `from` to the empty `to` and keeps the holes of a sparse `from`.
+fn copy_image(from: &Path, to: &fs::File) -> Result<()> {
     let src = fs::File::open(from).context("copy_image: cannot open source")?;
     let len = src
         .metadata()
         .context("copy_image: cannot get source size")?
         .len();
 
-    sparse::copy_to_new_file(&src, 0, to, len)
+    sparse::copy_to_empty_file(&src, 0, to, len)
 }
 
 struct CertInfo {
