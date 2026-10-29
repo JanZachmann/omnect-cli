@@ -36,7 +36,19 @@ use uuid::Uuid;
 
 use crate::file::compression;
 
+/// A new directory `/tmp/{uuid}`, removed on drop.
 struct TempDirGuard(PathBuf);
+
+impl TempDirGuard {
+    fn new() -> Result<Self> {
+        let tmp_dir = PathBuf::from(format!("/tmp/{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp_dir).context(format!(
+            "TempDirGuard::new: cannot create {}",
+            tmp_dir.display()
+        ))?;
+        Ok(Self(tmp_dir))
+    }
+}
 
 impl Drop for TempDirGuard {
     fn drop(&mut self) {
@@ -66,11 +78,7 @@ where
         compress_image: target_compression,
     } = output;
 
-    anyhow::ensure!(
-        image_file.try_exists().is_ok_and(|exists| exists),
-        "run_image_command: image doesn't exist {}",
-        image_file.to_str().context("cannot get image file path")?
-    );
+    ensure_image_exists(&image_file)?;
 
     let input_bmap = if output_bmap {
         bmap::find_input_bmap(&image_file, input_bmap.as_deref())?
@@ -81,32 +89,12 @@ where
     };
     let mut dest_image_file = image_file.clone();
 
-    // create /tmp/{uuid}/ and copy image into
-    let tmp_dir = PathBuf::from(format!("/tmp/{}", Uuid::new_v4()));
-    fs::create_dir_all(tmp_dir.clone()).context(format!(
-        "run_image_command: couldn't create destination path {}",
-        tmp_dir.to_str().context("cannot get tmp dir name")?
-    ))?;
-
-    let _guard = TempDirGuard(tmp_dir.clone());
-
-    let mut tmp_image_file = tmp_dir.join(
-        image_file
-            .file_name()
-            .context("cannot get image file name")?,
-    );
-
-    // if applicable decompress image to *.wic
-    if let Some(source_compression) = Compression::from_file(&image_file)? {
-        std::fs::copy(&image_file, &tmp_image_file)?;
-        tmp_image_file = compression::decompress(&tmp_image_file, &source_compression)?;
+    let tmp_dir = TempDirGuard::new()?;
+    let source_compression = Compression::from_file(&image_file)?;
+    if source_compression.is_some() {
         dest_image_file.set_extension("");
-    } else {
-        copy_image(&image_file, &tmp_image_file).context(format!(
-            "error: copy_image({:?}, {:?})",
-            image_file, tmp_image_file
-        ))?;
     }
+    let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
 
     if let Some((path, bmap)) = &input_bmap {
         bmap::verify_checksums(&tmp_image_file, bmap)
@@ -158,6 +146,56 @@ where
     }
 
     Ok(())
+}
+
+/// Runs `command` on a temp copy of the image and writes nothing back.
+fn run_read_only_image_command<F>(image_file: PathBuf, command: F) -> Result<()>
+where
+    F: FnOnce(&PathBuf) -> Result<()>,
+{
+    ensure_image_exists(&image_file)?;
+
+    let tmp_dir = TempDirGuard::new()?;
+    let source_compression = Compression::from_file(&image_file)?;
+    let tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
+
+    command(&tmp_image_file)
+}
+
+fn ensure_image_exists(image_file: &Path) -> Result<()> {
+    anyhow::ensure!(
+        image_file.try_exists().is_ok_and(|exists| exists),
+        "image doesn't exist {}",
+        image_file.display()
+    );
+    Ok(())
+}
+
+/// Copies `image_file` into `tmp_dir`, decompressed if it is compressed, and returns the copy.
+fn temp_image(
+    image_file: &Path,
+    source_compression: Option<&Compression>,
+    tmp_dir: &Path,
+) -> Result<PathBuf> {
+    let tmp_image_file = tmp_dir.join(
+        image_file
+            .file_name()
+            .context("cannot get image file name")?,
+    );
+
+    match source_compression {
+        Some(c) => {
+            std::fs::copy(image_file, &tmp_image_file)?;
+            compression::decompress(&tmp_image_file, c)
+        }
+        None => {
+            copy_image(image_file, &tmp_image_file).context(format!(
+                "error: copy_image({:?}, {:?})",
+                image_file, tmp_image_file
+            ))?;
+            Ok(tmp_image_file)
+        }
+    }
 }
 
 /// Copies `from` to `to` and keeps the holes of a sparse `from`.
@@ -486,7 +524,7 @@ pub fn run() -> Result<()> {
         Command::File(CopyFromImage {
             file_copy_params,
             image,
-        }) => run_image_command(image, ImageOutput::default(), |img: &PathBuf| {
+        }) => run_read_only_image_command(image, |img: &PathBuf| {
             file::copy_from_image(&file_copy_params, img)
         })?,
     }

@@ -1489,6 +1489,29 @@ fn check_image_decompression() {
     assert_eq!(image_path_wic_xz_hash1, image_path_wic_xz_hash2);
 }
 
+#[test]
+fn check_copy_from_image_writes_no_image() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path_wic_xz = tr.to_pathbuf("testfiles/image.wic.xz");
+    let image_hash = Testrunner::file_hash(&image_path_wic_xz);
+    let out_file = tr.pathbuf().join("hosts");
+
+    Command::cargo_bin("omnect-cli")
+        .expect("omnect-cli binary")
+        .arg("file")
+        .arg("copy-from-image")
+        .arg("-f")
+        .arg(format!("rootA:/etc/hosts,{}", out_file.to_string_lossy()))
+        .arg("-i")
+        .arg(&image_path_wic_xz)
+        .assert()
+        .success();
+
+    assert!(out_file.exists());
+    assert!(!image_path_wic_xz.with_extension("").exists());
+    assert_eq!(Testrunner::file_hash(&image_path_wic_xz), image_hash);
+}
+
 #[tokio::test]
 async fn check_ssh_tunnel_setup() {
     let tr = Testrunner::new("check_ssh_tunnel_setup");

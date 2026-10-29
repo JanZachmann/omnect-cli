@@ -8,7 +8,7 @@ use url::Url;
 
 const COPYRIGHT: &str = "Copyright © 2021 by conplement AG";
 
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug)]
 pub struct ImageOutput {
     /// optional: create a bmap of the output image
     #[arg(short = 'b', long = "output-bmap")]
