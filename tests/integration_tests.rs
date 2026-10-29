@@ -1618,6 +1618,55 @@ fn check_copy_from_image_writes_no_image() {
     assert_eq!(Testrunner::file_hash(&image_path_wic_xz), image_hash);
 }
 
+#[test]
+fn check_partition_files_stay_out_of_the_image_dir() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    // the name of the file that holds partition 1
+    let image_path = tr.pathbuf().join("1.img");
+    fs::rename(tr.to_pathbuf("testfiles/image.wic"), &image_path).expect("rename image");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    let out_file = tr.pathbuf().join("my-file");
+    let file_image = |command: &str, files: String| {
+        Command::cargo_bin("omnect-cli")
+            .expect("omnect-cli binary")
+            .arg("file")
+            .arg(command)
+            .arg("-f")
+            .arg(files)
+            .arg("-i")
+            .arg(&image_path)
+            .assert()
+            .success();
+    };
+    let dir_entries = || {
+        let mut entries = fs::read_dir(tr.pathbuf())
+            .expect("read test dir")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    };
+
+    file_image(
+        "copy-to-image",
+        format!("{},boot:/my-file", in_file.to_string_lossy()),
+    );
+    let entries = dir_entries();
+    file_image(
+        "copy-from-image",
+        format!("boot:/my-file,{}", out_file.to_string_lossy()),
+    );
+
+    assert_eq!(
+        fs::read(&out_file).expect("read out file"),
+        fs::read(&in_file).expect("read in file")
+    );
+    let mut expected = entries;
+    expected.push(out_file.file_name().expect("file name").to_owned());
+    expected.sort();
+    assert_eq!(dir_entries(), expected);
+}
+
 #[tokio::test]
 async fn check_ssh_tunnel_setup() {
     let tr = Testrunner::new("check_ssh_tunnel_setup");

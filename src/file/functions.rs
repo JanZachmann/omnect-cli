@@ -189,12 +189,8 @@ macro_rules! try_exec_cmd {
 }
 
 pub fn copy_to_image(file_copy_params: &[FileCopyToParams], image_file: &Path) -> Result<()> {
-    // we use the folder the image is located in
-    // the caller is responsible to create a /tmp/ directory if needed
-    let working_dir = image_file
-        .parent()
-        .context("copy_to_image: cannot get directory of image")?
-        .to_path_buf();
+    // the partition files get their own dir, so they never collide with the image
+    let working_dir = tempfile::tempdir().context("copy_to_image: cannot create a temp dir")?;
     let image_file = image_file.to_str().unwrap();
     let mut partition_map: HashMap<&Partition, Vec<(&PathBuf, &PathBuf)>> = HashMap::new();
 
@@ -209,7 +205,7 @@ pub fn copy_to_image(file_copy_params: &[FileCopyToParams], image_file: &Path) -
 
     // 1. for each involved partition
     for partition in partition_map.keys() {
-        let mut partition_file = working_dir.clone();
+        let mut partition_file = working_dir.path().to_path_buf();
         let partition_info = get_partition_info(image_file, partition)?;
 
         partition_file.push(Path::new(&format!("{}.img", partition_info.num)));
@@ -271,16 +267,12 @@ pub fn copy_to_image(file_copy_params: &[FileCopyToParams], image_file: &Path) -
 }
 
 pub fn copy_from_image(file_copy_params: &[FileCopyFromParams], image_file: &Path) -> Result<()> {
-    // we use the folder the image is located in
-    // the caller is responsible to create a /tmp/ directory if needed
-    let working_dir = image_file
-        .parent()
-        .context("copy_to_image: cannot get directory of image")?
-        .to_path_buf();
+    // the partition files get their own dir, so they never collide with the image
+    let working_dir = tempfile::tempdir().context("copy_from_image: cannot create a temp dir")?;
     let image_file = image_file.to_str().unwrap();
 
     for param in file_copy_params.iter() {
-        let mut partition_file = working_dir.clone();
+        let mut partition_file = working_dir.path().to_path_buf();
 
         let partition_info = get_partition_info(image_file, &param.partition)?;
         let in_file = param.in_file.to_str().unwrap();
@@ -302,7 +294,7 @@ pub fn copy_from_image(file_copy_params: &[FileCopyFromParams], image_file: &Pat
 
         // copy
         if param.partition == Partition::boot {
-            let mut tmp_out_file = working_dir.clone();
+            let mut tmp_out_file = working_dir.path().to_path_buf();
             // mcopy deadlocks when target file is not residing in workingdir so we copy to a temp file
             tmp_out_file.push(format!(
                 "{}-{}",
