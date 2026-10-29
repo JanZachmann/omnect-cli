@@ -1,6 +1,7 @@
 pub mod bmap;
 pub mod compression;
 pub mod functions;
+pub(crate) mod output;
 mod partition;
 pub(crate) mod sparse;
 

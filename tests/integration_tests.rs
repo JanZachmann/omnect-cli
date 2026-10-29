@@ -6,6 +6,7 @@ use httpmock::prelude::*;
 use omnect_cli::{file::bmap::Bmap, ssh};
 use predicates::prelude::*;
 use std::{
+    ffi::OsStr,
     fs::{self, create_dir_all},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -909,6 +910,10 @@ const ZERO_BLOCKS_FILE_ZEROS: usize = 64 * 1024;
 const OTHER_IMAGE_BMAP: &str = "<bmap><ImageSize>4096</ImageSize><BlockSize>4096</BlockSize>\
                                 <BlockMap><Range>0</Range></BlockMap></bmap>";
 
+fn bmap_path_of(image: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.bmap", image.to_string_lossy()))
+}
+
 fn read_bmap(path: &Path) -> Bmap {
     Bmap::read(path).expect("read bmap")
 }
@@ -1122,11 +1127,8 @@ fn check_file_copy_without_output_bmap_keeps_image_sparse() {
     let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
     let image_path = tr.to_pathbuf("testfiles/image.wic");
     let sparse_path = image_path.with_file_name("sparse.wic");
-    let bmap_path = PathBuf::from(format!("{}.bmap", sparse_path.to_string_lossy()));
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
     sparse_copy(&image_path, &sparse_path);
-    // without -b, a bmap next to the image is not used
-    fs::write(&bmap_path, OTHER_IMAGE_BMAP).expect("write bmap");
 
     Command::cargo_bin("omnect-cli")
         .expect("omnect-cli binary")
@@ -1144,10 +1146,6 @@ fn check_file_copy_without_output_bmap_keeps_image_sparse() {
         meta.blocks() * STAT_BLOCK_SIZE < meta.len(),
         "image is not sparse"
     );
-    assert_eq!(
-        fs::read_to_string(&bmap_path).expect("read bmap"),
-        OTHER_IMAGE_BMAP
-    );
 }
 
 #[test]
@@ -1157,7 +1155,7 @@ fn check_no_output_bmap_when_image_write_back_fails() {
     let written_image_path = image_path.with_extension("");
     let bmap_path = image_path.with_extension("bmap");
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
-    // a directory in place of the written image makes the write back fail, also for root
+    // a directory as the output image makes the write back fail, also for root
     create_dir_all(&written_image_path).expect("create directory");
 
     Command::cargo_bin("omnect-cli")
@@ -1169,8 +1167,11 @@ fn check_no_output_bmap_when_image_write_back_fails() {
         .arg("-i")
         .arg(&image_path)
         .arg("-b")
+        .arg("-o")
+        .arg(&written_image_path)
         .assert()
-        .failure();
+        .failure()
+        .stderr(predicate::str::contains("copy_image"));
     assert!(
         !bmap_path.exists(),
         "bmap written for an image that was not written back"
@@ -1234,31 +1235,118 @@ fn check_input_bmap_of_another_image_with_the_same_size() {
 fn check_chained_commands_with_input_bmap() {
     let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
     let image_xz_path = tr.to_pathbuf("testfiles/image.wic.xz");
-    let image_path = image_xz_path.with_extension("");
-    tr.to_pathbuf("testfiles/image.wic.bmap");
+    let image_xz_hash = Testrunner::file_hash(&image_xz_path);
+    let input_bmap_path = tr.to_pathbuf("testfiles/image.wic.bmap");
+    let input_bmap_hash = Testrunner::file_hash(&input_bmap_path);
+    let device_path = tr.pathbuf().join("device.wic");
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
-    let copy_to_image = |image: &Path, output_bmap: bool| {
-        let mut cmd = Command::cargo_bin("omnect-cli").expect("omnect-cli binary");
-        cmd.arg("file")
+    let copy_to_image = |image: &Path, args: &[&OsStr]| {
+        Command::cargo_bin("omnect-cli")
+            .expect("omnect-cli binary")
+            .arg("file")
             .arg("copy-to-image")
             .arg("-f")
             .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
             .arg("-i")
-            .arg(image);
-        if output_bmap {
-            cmd.arg("-b");
-        }
-        cmd.assert()
+            .arg(image)
+            .args(args)
+            .assert()
     };
 
-    // without -b, the bmap next to the image still has the checksums of the original image
-    copy_to_image(&image_xz_path, false).success();
-    copy_to_image(&image_path, true)
+    // image.wic would be written next to image.wic.bmap without updating it
+    copy_to_image(&image_xz_path, &[])
         .failure()
-        .stderr(predicate::str::contains("older version of this image"));
+        .stderr(predicate::str::contains("pass -b to update it"));
+    // the bmap of image.wic would replace the bmap of image.wic.xz
+    copy_to_image(&image_xz_path, &["-b".as_ref()])
+        .failure()
+        .stderr(predicate::str::contains("--output-image"));
 
-    copy_to_image(&image_xz_path, true).success();
-    copy_to_image(&image_path, true).success();
+    copy_to_image(
+        &image_xz_path,
+        &["-b".as_ref(), "-o".as_ref(), device_path.as_os_str()],
+    )
+    .success();
+    copy_to_image(&device_path, &["-b".as_ref()]).success();
+    copy_to_image(&device_path, &[])
+        .failure()
+        .stderr(predicate::str::contains("pass -b to update it"));
+
+    assert_eq!(Testrunner::file_hash(&image_xz_path), image_xz_hash);
+    assert_eq!(Testrunner::file_hash(&input_bmap_path), input_bmap_hash);
+    assert!(maps_all_ranges_of(
+        &read_bmap(&bmap_path_of(&device_path)),
+        &read_bmap(&input_bmap_path)
+    ));
+}
+
+#[test]
+fn check_derived_output_image_exists() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_xz_path = tr.to_pathbuf("testfiles/image.wic.xz");
+    let image_path = image_xz_path.with_extension("");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    fs::write(&image_path, "an older image").expect("write image");
+    let copy_to_image = |args: &[&OsStr]| {
+        Command::cargo_bin("omnect-cli")
+            .expect("omnect-cli binary")
+            .arg("file")
+            .arg("copy-to-image")
+            .arg("-f")
+            .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+            .arg("-i")
+            .arg(&image_xz_path)
+            .args(args)
+            .assert()
+    };
+
+    copy_to_image(&[])
+        .failure()
+        .stderr(predicate::str::contains("--output-image"));
+    // a path given with -o is overwritten
+    copy_to_image(&["-o".as_ref(), image_path.as_os_str()]).success();
+    assert_ne!(
+        fs::read(&image_path).expect("read image"),
+        b"an older image"
+    );
+}
+
+#[test]
+fn check_no_input_bmap() {
+    let tr = Testrunner::new(function_name!().split("::").last().expect("test name"));
+    let image_path = tr.to_pathbuf("testfiles/image.wic");
+    let bmap_path = bmap_path_of(&image_path);
+    let other_bmap_path = tr.pathbuf().join("other.bmap");
+    let in_file = tr.to_pathbuf("testfiles/boot.scr");
+    fs::write(&bmap_path, OTHER_IMAGE_BMAP).expect("write bmap");
+    fs::write(&other_bmap_path, OTHER_IMAGE_BMAP).expect("write bmap");
+    let copy_to_image = |args: &[&OsStr]| {
+        Command::cargo_bin("omnect-cli")
+            .expect("omnect-cli binary")
+            .arg("file")
+            .arg("copy-to-image")
+            .arg("-f")
+            .arg(format!("{},boot:/my-file", in_file.to_string_lossy()))
+            .arg("-i")
+            .arg(&image_path)
+            .args(args)
+            .assert()
+    };
+
+    copy_to_image(&["--no-input-bmap".as_ref()]).failure();
+    copy_to_image(&[
+        "-b".as_ref(),
+        "--no-input-bmap".as_ref(),
+        "--input-bmap".as_ref(),
+        other_bmap_path.as_os_str(),
+    ])
+    .failure();
+    copy_to_image(&["-b".as_ref()])
+        .failure()
+        .stderr(predicate::str::contains("--no-input-bmap"));
+
+    copy_to_image(&["-b".as_ref(), "--no-input-bmap".as_ref()]).success();
+    assert!(maps_whole_image(&read_bmap(&bmap_path)));
 }
 
 #[test]
@@ -1313,11 +1401,10 @@ fn check_bmap_generation_wic() {
 fn check_bmap_generation_wic_xz() {
     let tr = Testrunner::new(function_name!().split("::").last().unwrap());
     let image_path_wic_xz = tr.to_pathbuf("testfiles/image.wic.xz");
-    let image_path_wic = image_path_wic_xz.with_extension("");
+    let image_path_wic = tr.pathbuf().join("device.wic");
     let image_path_wic_copy = image_path_wic_xz.with_extension("copy");
-    // the Yocto bmap of the image; omnect-cli replaces it with the one it creates
-    let image_path_bmap = tr.to_pathbuf("testfiles/image.wic.bmap");
-    let input_bmap = read_bmap(&image_path_bmap);
+    let image_path_bmap = bmap_path_of(&image_path_wic);
+    let input_bmap = read_bmap(&tr.to_pathbuf("testfiles/image.wic.bmap"));
     let in_file = tr.to_pathbuf("testfiles/boot.scr");
     let in_file = in_file.to_str().unwrap();
 
@@ -1330,6 +1417,8 @@ fn check_bmap_generation_wic_xz() {
         .arg("-i")
         .arg(&image_path_wic_xz)
         .arg("-b")
+        .arg("-o")
+        .arg(&image_path_wic)
         .assert();
     assert.success();
 

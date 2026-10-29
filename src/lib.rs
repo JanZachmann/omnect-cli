@@ -75,30 +75,44 @@ where
     let ImageOutput {
         output_bmap,
         input_bmap,
+        no_input_bmap,
+        output_image,
         compress_image: target_compression,
     } = output;
 
     ensure_image_exists(&image_file)?;
 
-    let input_bmap = if output_bmap {
+    let input_bmap = if output_bmap && !no_input_bmap {
         bmap::find_input_bmap(&image_file, input_bmap.as_deref())?
             .map(|path| Bmap::read(&path).map(|bmap| (path, bmap)))
             .transpose()?
     } else {
         None
     };
-    let mut dest_image_file = image_file.clone();
+    let source_compression = Compression::from_file(&image_file)?;
+    let dest_image_file = file::output::output_image(
+        &image_file,
+        source_compression.is_some(),
+        target_compression.as_ref(),
+        output_image.as_deref(),
+    );
+    file::output::check_conflicts(
+        &image_file,
+        &dest_image_file,
+        output_image.is_some(),
+        output_bmap,
+        input_bmap.as_ref().map(|(path, _)| path.as_path()),
+    )?;
 
     let tmp_dir = TempDirGuard::new()?;
-    let source_compression = Compression::from_file(&image_file)?;
-    if source_compression.is_some() {
-        dest_image_file.set_extension("");
-    }
     let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
 
     if let Some((path, bmap)) = &input_bmap {
-        bmap::verify_checksums(&tmp_image_file, bmap)
-            .context(format!("cannot use input bmap {}", path.display()))?;
+        bmap::verify_checksums(&tmp_image_file, bmap).context(format!(
+            "cannot use input bmap {}; pass the right one with --input-bmap, or map the \
+             whole image with --no-input-bmap",
+            path.display()
+        ))?;
     }
 
     // run command
@@ -108,7 +122,7 @@ where
     if output_bmap {
         match &input_bmap {
             Some((path, _)) => info!("the bmap maps the ranges of {}", path.display()),
-            None => info!("no input bmap found, so the bmap maps the whole image"),
+            None => info!("no input bmap, so the bmap maps the whole image"),
         }
         bmap::write_bmap(
             &tmp_image_file,
@@ -120,11 +134,6 @@ where
     // if applicable compress image
     if let Some(c) = target_compression {
         tmp_image_file = compression::compress(&tmp_image_file, &c)?;
-        dest_image_file.set_file_name(
-            tmp_image_file
-                .file_name()
-                .context("cannot get image file name")?,
-        );
         std::fs::copy(&tmp_image_file, &dest_image_file).context(format!(
             "error: std::fs::copy({:?}, {:?})",
             tmp_image_file, dest_image_file

@@ -16,6 +16,16 @@ pub struct ImageOutput {
     /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
     #[arg(long = "input-bmap", requires = "output_bmap")]
     pub input_bmap: Option<PathBuf>,
+    /// optional: do not use a bmap next to the image, so the bmap maps the whole image
+    #[arg(
+        long = "no-input-bmap",
+        requires = "output_bmap",
+        conflicts_with = "input_bmap"
+    )]
+    pub no_input_bmap: bool,
+    /// optional: write the output image to this path; default: the input image, without the compression extension, plus the --pack-image extension
+    #[arg(short = 'o', long = "output-image")]
+    pub output_image: Option<PathBuf>,
     /// optional: pack image [xz, bzip2, gzip] (for xz default level '9' is used, which can be overwritten by setting 'XZ_COMPRESSION_LEVEL=')
     #[arg(short = 'p', long = "pack-image", value_enum)]
     pub compress_image: Option<Compression>,

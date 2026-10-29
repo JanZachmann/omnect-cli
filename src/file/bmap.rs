@@ -141,8 +141,7 @@ pub fn verify_checksums(image_file: &Path, bmap: &Bmap) -> Result<()> {
         anyhow::ensure!(
             actual.eq_ignore_ascii_case(expected.trim()),
             "verify_checksums: range {range:?} of the image does not match the bmap, so it is the \
-             bmap of another image or of an older version of this image. Pass the right bmap \
-             with --input-bmap."
+             bmap of another image or of an older version of this image"
         );
     }
 
@@ -509,7 +508,7 @@ mod tests {
             .expect("change data block");
 
         let err = verify_checksums(&image, &bmap).expect_err("changed image accepted");
-        assert!(err.to_string().contains("--input-bmap"), "{err}");
+        assert!(err.to_string().contains("does not match the bmap"), "{err}");
     }
 
     #[test]
