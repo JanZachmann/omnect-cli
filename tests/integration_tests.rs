@@ -1171,7 +1171,7 @@ fn check_no_output_bmap_when_image_write_back_fails() {
         .arg(&written_image_path)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("copy_image"));
+        .stderr(predicate::str::contains("cannot rename"));
     assert!(
         !bmap_path.exists(),
         "bmap written for an image that was not written back"

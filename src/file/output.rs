@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const TMP_DIR_PREFIX: &str = ".omnect-cli-";
+
 /// Returns `explicit`, else `image` without the extension of its `source` compression, with the
 /// extension of `target` appended. Fails if `explicit` has no extension of `target`, or a
 /// compression extension while `target` is none.
@@ -84,6 +86,34 @@ pub fn check_conflicts(
     Ok(())
 }
 
+/// Writes `dest` as a new file in its directory and renames it, so `dest` stays unchanged if
+/// `write` fails. A symlink is followed, and an existing `dest` keeps its permissions.
+pub fn replace(dest: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    let dest = resolve(dest)?;
+    let dir = dest
+        .parent()
+        .context(format!("{} has no directory", dest.display()))?;
+    let tmp_dir = tempfile::Builder::new()
+        .prefix(TMP_DIR_PREFIX)
+        .tempdir_in(dir)
+        .context(format!("cannot create a temp dir in {}", dir.display()))?;
+    let tmp_file = tmp_dir.path().join(
+        dest.file_name()
+            .context(format!("{} has no file name", dest.display()))?,
+    );
+
+    write(&tmp_file)?;
+    if let Ok(metadata) = fs::metadata(&dest) {
+        fs::set_permissions(&tmp_file, metadata.permissions())
+            .context(format!("cannot set permissions of {}", tmp_file.display()))?;
+    }
+    fs::rename(&tmp_file, &dest).context(format!(
+        "cannot rename {} to {}",
+        tmp_file.display(),
+        dest.display()
+    ))
+}
+
 fn same_file(a: &Path, b: &Path) -> Result<bool> {
     Ok(resolve(a)? == resolve(b)?)
 }
@@ -110,11 +140,16 @@ fn resolve(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use crate::file::output::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     const IMAGE: &str = "image.wic";
     const IMAGE_XZ: &str = "image.wic.xz";
     const OTHER_IMAGE: &str = "device.wic";
     const XZ_LEVEL: u32 = 9;
+    const OLD_CONTENT: &[u8] = b"old image";
+    const NEW_CONTENT: &[u8] = b"new image";
+    const IMAGE_MODE: u32 = 0o644;
+    const MODE_MASK: u32 = 0o777;
 
     fn touch(path: &Path) {
         fs::write(path, []).expect("create file");
@@ -281,6 +316,47 @@ mod tests {
         // --input-bmap and --no-input-bmap
         assert!(check_conflicts(&image_xz, &image, false, true, Some(&other_bmap)).is_err());
         assert!(check_conflicts(&image_xz, &image, false, true, None).is_err());
+    }
+
+    #[test]
+    fn replace_keeps_dest_when_write_fails() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join(IMAGE);
+        fs::write(&image, OLD_CONTENT).expect("write image");
+
+        assert!(
+            replace(&image, |tmp| {
+                fs::write(tmp, NEW_CONTENT).expect("write tmp");
+                anyhow::bail!("write failed")
+            })
+            .is_err()
+        );
+        assert_eq!(fs::read(&image).expect("read image"), OLD_CONTENT);
+        assert_eq!(
+            fs::read_dir(dir.path()).expect("read dir").count(),
+            1,
+            "temp dir was left"
+        );
+    }
+
+    #[test]
+    fn replace_keeps_permissions_and_symlink() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join(IMAGE);
+        let link = dir.path().join(OTHER_IMAGE);
+        fs::write(&image, OLD_CONTENT).expect("write image");
+        fs::set_permissions(&image, fs::Permissions::from_mode(IMAGE_MODE))
+            .expect("set permissions");
+        symlink(&image, &link).expect("create symlink");
+
+        replace(&link, |tmp| Ok(fs::write(tmp, NEW_CONTENT)?)).expect("replace");
+
+        assert!(link.is_symlink());
+        assert_eq!(fs::read(&image).expect("read image"), NEW_CONTENT);
+        assert_eq!(
+            fs::metadata(&image).expect("metadata").permissions().mode() & MODE_MASK,
+            IMAGE_MODE
+        );
     }
 
     #[test]

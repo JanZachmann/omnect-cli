@@ -25,7 +25,7 @@ use file::{
     bmap::{self, Bmap},
     compression::{self, Compression},
     functions::FileCopyToParams,
-    output::{check_conflicts, output_image},
+    output::{check_conflicts, output_image, replace},
     sparse,
 };
 use log::{error, info};
@@ -144,24 +144,25 @@ where
     // if applicable compress image
     if let Some(c) = target_compression {
         tmp_image_file = compression::compress(&tmp_image_file, &c)?;
-        fs::copy(&tmp_image_file, &dest_image_file).context(format!(
-            "error: std::fs::copy({:?}, {:?})",
-            tmp_image_file, dest_image_file
-        ))?;
+        replace(&dest_image_file, |dest| {
+            fs::copy(&tmp_image_file, dest)
+                .map(drop)
+                .context(format!("cannot copy {tmp_image_file:?} to {dest:?}"))
+        })?;
     } else {
-        copy_image(&tmp_image_file, &dest_image_file).context(format!(
-            "error: copy_image({:?}, {:?})",
-            tmp_image_file, dest_image_file
-        ))?;
+        replace(&dest_image_file, |dest| {
+            copy_image(&tmp_image_file, dest)
+                .context(format!("cannot copy {tmp_image_file:?} to {dest:?}"))
+        })?;
     }
 
     // copy the bmap last, so it never describes an image that was not written back
     if output_bmap {
-        let target_bmap = bmap::bmap_path(&dest_image_file);
-        fs::copy(&tmp_bmap, &target_bmap).context(format!(
-            "error: std::fs::copy({:?}, {:?})",
-            tmp_bmap, target_bmap
-        ))?;
+        replace(&bmap::bmap_path(&dest_image_file), |dest| {
+            fs::copy(&tmp_bmap, dest)
+                .map(drop)
+                .context(format!("cannot copy {tmp_bmap:?} to {dest:?}"))
+        })?;
     }
 
     Ok(())
