@@ -1256,9 +1256,16 @@ fn check_chained_commands_with_input_bmap() {
     // image.wic would be written next to image.wic.bmap without updating it
     copy_to_image(&image_xz_path, &[])
         .failure()
-        .stderr(predicate::str::contains("pass -b to update it"));
+        .stderr(predicate::str::contains("pass -b to write a matching bmap"));
+    // bmaptool would use image.wic.bmap for the changed image.wic.xz
+    copy_to_image(&image_xz_path, &["-p".as_ref(), "xz".as_ref()])
+        .failure()
+        .stderr(predicate::str::contains("pass -b to write a matching bmap"));
     // the bmap of image.wic would replace the bmap of image.wic.xz
     copy_to_image(&image_xz_path, &["-b".as_ref()])
+        .failure()
+        .stderr(predicate::str::contains("--output-image"));
+    copy_to_image(&image_xz_path, &["-b".as_ref(), "--no-input-bmap".as_ref()])
         .failure()
         .stderr(predicate::str::contains("--output-image"));
 
@@ -1270,7 +1277,7 @@ fn check_chained_commands_with_input_bmap() {
     copy_to_image(&device_path, &["-b".as_ref()]).success();
     copy_to_image(&device_path, &[])
         .failure()
-        .stderr(predicate::str::contains("pass -b to update it"));
+        .stderr(predicate::str::contains("pass -b to write a matching bmap"));
 
     assert_eq!(Testrunner::file_hash(&image_xz_path), image_xz_hash);
     assert_eq!(Testrunner::file_hash(&input_bmap_path), input_bmap_hash);

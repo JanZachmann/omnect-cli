@@ -23,8 +23,10 @@ use cli::{
 };
 use file::{
     bmap::{self, Bmap},
-    compression::Compression,
+    compression::{self, Compression},
     functions::FileCopyToParams,
+    output::{check_conflicts, output_image},
+    sparse,
 };
 use log::{error, info};
 use std::{
@@ -33,8 +35,6 @@ use std::{
 };
 use tokio::fs::remove_dir_all;
 use uuid::Uuid;
-
-use crate::file::compression;
 
 /// A new directory `/tmp/{uuid}`, removed on drop.
 struct TempDirGuard(PathBuf);
@@ -76,7 +76,7 @@ where
         output_bmap,
         input_bmap,
         no_input_bmap,
-        output_image,
+        output_image: explicit_output,
         compress_image: target_compression,
     } = output;
 
@@ -84,22 +84,26 @@ where
 
     let input_bmap = if output_bmap && !no_input_bmap {
         bmap::find_input_bmap(&image_file, input_bmap.as_deref())?
-            .map(|path| Bmap::read(&path).map(|bmap| (path, bmap)))
+            .map(|path| {
+                Bmap::read(&path)
+                    .with_context(|| input_bmap_error(&path))
+                    .map(|bmap| (path, bmap))
+            })
             .transpose()?
     } else {
         None
     };
     let source_compression = Compression::from_file(&image_file)?;
-    let dest_image_file = file::output::output_image(
+    let dest_image_file = output_image(
         &image_file,
         source_compression.is_some(),
         target_compression.as_ref(),
-        output_image.as_deref(),
+        explicit_output.as_deref(),
     );
-    file::output::check_conflicts(
+    check_conflicts(
         &image_file,
         &dest_image_file,
-        output_image.is_some(),
+        explicit_output.is_some(),
         output_bmap,
         input_bmap.as_ref().map(|(path, _)| path.as_path()),
     )?;
@@ -108,11 +112,7 @@ where
         let Some((path, bmap)) = &input_bmap else {
             return Ok(());
         };
-        bmap::verify_checksums(image, bmap).context(format!(
-            "cannot use input bmap {}; pass the right one with --input-bmap, or map the \
-             whole image with --no-input-bmap",
-            path.display()
-        ))
+        bmap::verify_checksums(image, bmap).with_context(|| input_bmap_error(path))
     };
 
     // a wrong bmap of an uncompressed image fails before the copy
@@ -144,7 +144,7 @@ where
     // if applicable compress image
     if let Some(c) = target_compression {
         tmp_image_file = compression::compress(&tmp_image_file, &c)?;
-        std::fs::copy(&tmp_image_file, &dest_image_file).context(format!(
+        fs::copy(&tmp_image_file, &dest_image_file).context(format!(
             "error: std::fs::copy({:?}, {:?})",
             tmp_image_file, dest_image_file
         ))?;
@@ -158,13 +158,21 @@ where
     // copy the bmap last, so it never describes an image that was not written back
     if output_bmap {
         let target_bmap = bmap::bmap_path(&dest_image_file);
-        std::fs::copy(&tmp_bmap, &target_bmap).context(format!(
+        fs::copy(&tmp_bmap, &target_bmap).context(format!(
             "error: std::fs::copy({:?}, {:?})",
             tmp_bmap, target_bmap
         ))?;
     }
 
     Ok(())
+}
+
+fn input_bmap_error(path: &Path) -> String {
+    format!(
+        "cannot use input bmap {}; pass the right one with --input-bmap, or map the whole \
+         image with --no-input-bmap",
+        path.display()
+    )
 }
 
 /// Runs `command` on a temp copy of the image and writes nothing back.
@@ -221,7 +229,7 @@ fn copy_image(from: &Path, to: &Path) -> Result<()> {
         .context("copy_image: cannot get source size")?
         .len();
 
-    file::sparse::copy_to_new_file(&src, 0, to, len)
+    sparse::copy_to_new_file(&src, 0, to, len)
 }
 
 struct CertInfo {

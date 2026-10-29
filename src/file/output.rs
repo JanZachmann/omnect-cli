@@ -28,7 +28,9 @@ pub fn output_image(
 }
 
 /// Fails if writing `output_image` and its bmap would overwrite a file the user did not name,
-/// replace the bmap of an image that stays, or leave a bmap that no longer matches the image.
+/// replace the bmap of an image that stays, or leave a bmap next to the output image that does
+/// not match it: `<output image>.bmap`, or for a compressed output image the bmap of the
+/// uncompressed image, which `bmaptool` also uses.
 pub fn check_conflicts(
     input_image: &Path,
     output_image: &Path,
@@ -37,7 +39,6 @@ pub fn check_conflicts(
     input_bmap: Option<&Path>,
 ) -> Result<()> {
     let in_place = same_file(input_image, output_image)?;
-    let target_bmap = bmap::bmap_path(output_image);
 
     anyhow::ensure!(
         explicit_output || in_place || !output_image.exists(),
@@ -45,20 +46,23 @@ pub fn check_conflicts(
         output_image.display()
     );
     if output_bmap {
-        if let Some(input_bmap) = input_bmap {
-            anyhow::ensure!(
-                in_place || !same_file(input_bmap, &target_bmap)?,
-                "{} is the bmap of {} and would be replaced; choose the output image with \
-                 --output-image",
-                input_bmap.display(),
-                input_image.display()
-            );
+        let target_bmap = bmap::bmap_path(output_image);
+        if !in_place {
+            let found_bmap = bmap::find_input_bmap(input_image, None)?;
+            for bmap in input_bmap.into_iter().chain(found_bmap.as_deref()) {
+                anyhow::ensure!(
+                    !same_file(bmap, &target_bmap)?,
+                    "{} is the bmap of {} and would be replaced; choose another output image \
+                     with --output-image",
+                    bmap.display(),
+                    input_image.display()
+                );
+            }
         }
-    } else {
-        anyhow::ensure!(
-            !target_bmap.exists(),
-            "{} would no longer match {}; pass -b to update it, or remove it",
-            target_bmap.display(),
+    } else if let Some(stale_bmap) = bmap::find_input_bmap(output_image, None)? {
+        anyhow::bail!(
+            "{} would not match {}; pass -b to write a matching bmap",
+            stale_bmap.display(),
             output_image.display()
         );
     }
@@ -165,6 +169,34 @@ mod tests {
         touch(&bmap::bmap_path(&image));
 
         assert!(check_conflicts(&image, &image, false, false, None).is_err());
+    }
+
+    #[test]
+    fn check_conflicts_rejects_a_stale_bmap_of_the_uncompressed_image() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image_xz = dir.path().join(IMAGE_XZ);
+        let image_bmap = bmap::bmap_path(&dir.path().join(IMAGE));
+        touch(&image_xz);
+        touch(&image_bmap);
+
+        // bmaptool uses image.wic.bmap for image.wic.xz
+        assert!(check_conflicts(&image_xz, &image_xz, false, false, None).is_err());
+        check_conflicts(&image_xz, &image_xz, false, true, Some(&image_bmap)).expect("with -b");
+    }
+
+    #[test]
+    fn check_conflicts_rejects_replacing_the_bmap_next_to_the_input_image() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image_xz = dir.path().join(IMAGE_XZ);
+        let image = dir.path().join(IMAGE);
+        let other_bmap = dir.path().join("other.bmap");
+        touch(&image_xz);
+        touch(&bmap::bmap_path(&image));
+        touch(&other_bmap);
+
+        // --input-bmap and --no-input-bmap
+        assert!(check_conflicts(&image_xz, &image, false, true, Some(&other_bmap)).is_err());
+        assert!(check_conflicts(&image_xz, &image, false, true, None).is_err());
     }
 
     #[test]
