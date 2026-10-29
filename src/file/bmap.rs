@@ -1,4 +1,4 @@
-use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, compression::Compression, sparse};
+use crate::file::{COPY_CHUNK_SIZE, IMAGE_BLOCK_SIZE, sparse};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -90,8 +90,8 @@ fn parse_range(text: &str) -> Result<RangeInclusive<u64>> {
     Ok(first..=last)
 }
 
-/// Returns `explicit`, else `<image>.bmap`, else `<image without compression extension>.bmap`,
-/// whichever exists first.
+/// Returns `explicit`, else the bmap `bmaptool` uses for `image`: `<image>.bmap`, else the same
+/// with one extension of `image` removed at a time, whichever exists first.
 pub fn find_input_bmap(image: &Path, explicit: Option<&Path>) -> Result<Option<PathBuf>> {
     if let Some(path) = explicit {
         anyhow::ensure!(
@@ -102,12 +102,17 @@ pub fn find_input_bmap(image: &Path, explicit: Option<&Path>) -> Result<Option<P
         return Ok(Some(path.to_path_buf()));
     }
 
-    let mut candidates = vec![bmap_path(image)];
-    if Compression::has_extension(image) {
-        candidates.push(bmap_path(&image.with_extension("")));
+    let mut image = image.to_path_buf();
+    loop {
+        let bmap = bmap_path(&image);
+        if bmap.is_file() {
+            return Ok(Some(bmap));
+        }
+        if image.extension().is_none() {
+            return Ok(None);
+        }
+        image.set_extension("");
     }
-
-    Ok(candidates.into_iter().find(|p| p.is_file()))
 }
 
 pub fn bmap_path(image: &Path) -> PathBuf {
@@ -418,6 +423,20 @@ mod tests {
             find_input_bmap(&image, None).expect("find bmap"),
             Some(compressed_bmap)
         );
+    }
+
+    #[test]
+    fn find_input_bmap_strips_extensions_like_bmaptool() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let bmap = dir.path().join("image.bmap");
+        fs::write(&bmap, "").expect("write bmap");
+
+        for image in ["image.wic", "image.wic.xz"] {
+            assert_eq!(
+                find_input_bmap(&dir.path().join(image), None).expect("find bmap"),
+                Some(bmap.clone())
+            );
+        }
     }
 
     #[test]

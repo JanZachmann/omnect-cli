@@ -47,9 +47,8 @@ pub fn output_image(
 }
 
 /// Fails if writing `output_image` and its bmap would overwrite a file the user did not name,
-/// replace the bmap of an image that stays, or leave a bmap next to the output image that does
-/// not match it: `<output image>.bmap`, or for a compressed output image the bmap of the
-/// uncompressed image, which `bmaptool` also uses.
+/// replace the bmap of an image that stays, or leave a bmap that `bmaptool` would use for the
+/// output image and that does not match it.
 pub fn check_conflicts(
     input_image: &Path,
     output_image: &Path,
@@ -306,6 +305,16 @@ mod tests {
         let image = dir.path().join(IMAGE);
         touch(&image);
         touch(&bmap::bmap_path(&image));
+
+        assert!(check_conflicts(&image, &image, false, false, None).is_err());
+    }
+
+    #[test]
+    fn check_conflicts_rejects_a_stale_bmap_bmaptool_finds() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let image = dir.path().join(IMAGE);
+        touch(&image);
+        touch(&dir.path().join("image.bmap"));
 
         assert!(check_conflicts(&image, &image, false, false, None).is_err());
     }

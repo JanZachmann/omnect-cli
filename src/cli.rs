@@ -13,7 +13,7 @@ pub struct ImageOutput {
     /// optional: create a bmap of the output image
     #[arg(short = 'b', long = "output-bmap")]
     pub output_bmap: bool,
-    /// optional: bmap of the input image; default: <image>.bmap or <uncompressed image>.bmap next to the image
+    /// optional: bmap of the input image; default: the bmap next to the image that bmaptool would use
     #[arg(long = "input-bmap", requires = "output_bmap")]
     pub input_bmap: Option<PathBuf>,
     /// optional: do not use a bmap next to the image, so the bmap maps the whole image
