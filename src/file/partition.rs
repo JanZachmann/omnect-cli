@@ -31,10 +31,12 @@ pub fn get_partition_data<P: AsRef<Path>>(path: P, partition_num: u32) -> Result
                 entry.ending_lba >= entry.starting_lba,
                 "GPT partition {partition_num} has invalid LBA range (ending_lba < starting_lba)"
             );
+            // the callers count in SECTOR_SIZE units
+            let scale = gpt.sector_size / SECTOR_SIZE;
             return Ok(PartitionData {
                 num: partition_num,
-                start: entry.starting_lba,
-                count: entry.ending_lba - entry.starting_lba + 1,
+                start: entry.starting_lba * scale,
+                count: (entry.ending_lba - entry.starting_lba + 1) * scale,
             });
         }
         Err(e) => e,
@@ -60,4 +62,41 @@ pub fn get_partition_data<P: AsRef<Path>>(path: P, partition_num: u32) -> Result
 pub fn is_gpt<P: AsRef<Path>>(path: P) -> Result<bool> {
     let mut file = File::open(path.as_ref()).context("is_gpt: failed to open image")?;
     Ok(gptman::GPT::find_from(&mut file).is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::file::partition::*;
+    use gptman::{GPT, GPTPartitionEntry};
+
+    const GPT_SECTOR_SIZE: u64 = 4096;
+    const DISK_SECTORS: u64 = 64;
+    const PART_NUM: u32 = 1;
+    const PART_SECTORS: u64 = 8;
+    const GUID: [u8; 16] = [0xff; 16];
+
+    #[test]
+    fn get_partition_data_converts_4k_gpt_sectors() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("image.wic");
+        let mut file = File::create(&path).expect("create image");
+        file.set_len(DISK_SECTORS * GPT_SECTOR_SIZE)
+            .expect("set image size");
+        let mut gpt = GPT::new_from(&mut file, GPT_SECTOR_SIZE, GUID).expect("create gpt");
+        let start = gpt.header.first_usable_lba;
+        gpt[PART_NUM] = GPTPartitionEntry {
+            partition_type_guid: GUID,
+            unique_partition_guid: GUID,
+            starting_lba: start,
+            ending_lba: start + PART_SECTORS - 1,
+            attribute_bits: 0,
+            partition_name: "part".into(),
+        };
+        gpt.write_into(&mut file).expect("write gpt");
+
+        let data = get_partition_data(&path, PART_NUM).expect("partition data");
+        let scale = GPT_SECTOR_SIZE / SECTOR_SIZE;
+        assert_eq!(data.start, start * scale);
+        assert_eq!(data.count, PART_SECTORS * scale);
+    }
 }
