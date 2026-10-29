@@ -96,10 +96,10 @@ where
     let source_compression = Compression::from_file(&image_file)?;
     let dest_image_file = output_image(
         &image_file,
-        source_compression.is_some(),
+        source_compression.as_ref(),
         target_compression.as_ref(),
         explicit_output.as_deref(),
-    );
+    )?;
     check_conflicts(
         &image_file,
         &dest_image_file,

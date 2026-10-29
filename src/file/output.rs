@@ -5,26 +5,40 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Returns `explicit`, else `image` without its last extension if it is compressed, with the
-/// extension of `target` appended.
+/// Returns `explicit`, else `image` without the extension of its `source` compression, with the
+/// extension of `target` appended. Fails if `explicit` has no extension of `target`, or a
+/// compression extension while `target` is none.
 pub fn output_image(
     image: &Path,
-    source_compressed: bool,
+    source: Option<&Compression>,
     target: Option<&Compression>,
     explicit: Option<&Path>,
-) -> PathBuf {
+) -> Result<PathBuf> {
     if let Some(path) = explicit {
-        return path.to_path_buf();
+        match target {
+            Some(c) => anyhow::ensure!(
+                c.matches_extension(path),
+                "{} has no extension of the -p compression; name it e.g. {}",
+                path.display(),
+                c.compressed_path(path).display()
+            ),
+            None => anyhow::ensure!(
+                !Compression::has_extension(path),
+                "{} has a compression extension, but the image is written uncompressed; pass -p",
+                path.display()
+            ),
+        }
+        return Ok(path.to_path_buf());
     }
 
     let mut output = image.to_path_buf();
-    if source_compressed {
+    if source.is_some_and(|c| c.matches_extension(image)) {
         output.set_extension("");
     }
-    match target {
+    Ok(match target {
         Some(c) => c.compressed_path(&output),
         None => output,
-    }
+    })
 }
 
 /// Fails if writing `output_image` and its bmap would overwrite a file the user did not name,
@@ -113,14 +127,84 @@ mod tests {
         let xz = Compression::xz {
             compression_level: XZ_LEVEL,
         };
+        let output = |image, source, target| {
+            output_image(image, source, target, None).expect("output image")
+        };
 
-        assert_eq!(output_image(image, false, None, None), image);
-        assert_eq!(output_image(image_xz, true, None, None), image);
-        assert_eq!(output_image(image, false, Some(&xz), None), image_xz);
-        assert_eq!(output_image(image_xz, true, Some(&xz), None), image_xz);
+        assert_eq!(output(image, None, None), image);
+        assert_eq!(output(image_xz, Some(&xz), None), image);
+        assert_eq!(output(image, None, Some(&xz)), image_xz);
+        assert_eq!(output(image_xz, Some(&xz), Some(&xz)), image_xz);
+    }
+
+    #[test]
+    fn output_image_strips_only_the_source_compression_extension() {
+        let image = Path::new("image.bin");
+        let xz = Compression::xz {
+            compression_level: XZ_LEVEL,
+        };
+
         assert_eq!(
-            output_image(image_xz, true, Some(&xz), Some(Path::new(OTHER_IMAGE))),
+            output_image(image, Some(&xz), None, None).expect("output image"),
+            image
+        );
+    }
+
+    #[test]
+    fn output_image_takes_explicit_path_with_matching_extension() {
+        let xz = Compression::xz {
+            compression_level: XZ_LEVEL,
+        };
+        let other_xz = Path::new("device.wic.xz");
+
+        assert_eq!(
+            output_image(
+                Path::new(IMAGE_XZ),
+                Some(&xz),
+                None,
+                Some(Path::new(OTHER_IMAGE))
+            )
+            .expect("uncompressed"),
             Path::new(OTHER_IMAGE)
+        );
+        assert_eq!(
+            output_image(Path::new(IMAGE), None, Some(&xz), Some(other_xz)).expect("compressed"),
+            other_xz
+        );
+    }
+
+    #[test]
+    fn output_image_rejects_explicit_path_with_wrong_extension() {
+        let xz = Compression::xz {
+            compression_level: XZ_LEVEL,
+        };
+
+        assert!(
+            output_image(
+                Path::new(IMAGE),
+                None,
+                Some(&xz),
+                Some(Path::new(OTHER_IMAGE))
+            )
+            .is_err()
+        );
+        assert!(
+            output_image(
+                Path::new(IMAGE),
+                None,
+                Some(&xz),
+                Some(Path::new("device.wic.gz"))
+            )
+            .is_err()
+        );
+        assert!(
+            output_image(
+                Path::new(IMAGE_XZ),
+                Some(&xz),
+                None,
+                Some(Path::new("device.wic.xz"))
+            )
+            .is_err()
         );
     }
 

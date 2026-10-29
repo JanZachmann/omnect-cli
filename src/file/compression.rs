@@ -124,10 +124,14 @@ impl Compression {
         PathBuf::from(compressed)
     }
 
-    pub fn has_extension(path: &Path) -> bool {
+    pub fn matches_extension(&self, path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| Compression::iter().any(|c| c.extensions().contains(&e)))
+            .is_some_and(|e| self.extensions().contains(&e))
+    }
+
+    pub fn has_extension(path: &Path) -> bool {
+        Compression::iter().any(|c| c.matches_extension(path))
     }
 
     pub fn from_file(image_file_name: &PathBuf) -> Result<Option<Compression>> {
@@ -210,10 +214,7 @@ pub fn decompress(
     dest_dir: &Path,
 ) -> Result<PathBuf> {
     anyhow::ensure!(
-        image_file_name
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| compression.extensions().contains(&ext)),
+        compression.matches_extension(image_file_name),
         "decompress: {} has no {:?} file extension",
         image_file_name.display(),
         compression.extensions()
