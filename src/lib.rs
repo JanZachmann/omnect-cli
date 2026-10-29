@@ -104,15 +104,25 @@ where
         input_bmap.as_ref().map(|(path, _)| path.as_path()),
     )?;
 
-    let tmp_dir = TempDirGuard::new()?;
-    let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
-
-    if let Some((path, bmap)) = &input_bmap {
-        bmap::verify_checksums(&tmp_image_file, bmap).context(format!(
+    let verify_input_bmap = |image: &Path| -> Result<()> {
+        let Some((path, bmap)) = &input_bmap else {
+            return Ok(());
+        };
+        bmap::verify_checksums(image, bmap).context(format!(
             "cannot use input bmap {}; pass the right one with --input-bmap, or map the \
              whole image with --no-input-bmap",
             path.display()
-        ))?;
+        ))
+    };
+
+    // a wrong bmap of an uncompressed image fails before the copy
+    if source_compression.is_none() {
+        verify_input_bmap(&image_file)?;
+    }
+    let tmp_dir = TempDirGuard::new()?;
+    let mut tmp_image_file = temp_image(&image_file, source_compression.as_ref(), &tmp_dir.0)?;
+    if source_compression.is_some() {
+        verify_input_bmap(&tmp_image_file)?;
     }
 
     // run command
