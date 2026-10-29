@@ -185,7 +185,7 @@ omnect-cli file copy-to-image --help
 
 ## Output image
 
-A command that changes an image writes the result to the input image. For a compressed image it writes the uncompressed image next to it, e.g. `my-image.wic` for `my-image.wic.xz`. With `-p` (`--pack-image`) it adds the extension of the compression, e.g. `my-image.wic.xz` for `my-image.wic`. `-o` (`--output-image`) writes the result to the given path instead, and the input image stays unchanged.
+A command that changes an image writes the result to the input image. For a compressed image it writes the uncompressed image next to it, e.g. `my-image.wic` for `my-image.wic.xz`. With `-p` (`--pack-image`) it adds the extension of the compression (`.xz`, `.bz2` or `.gzip`), e.g. `my-image.wic.xz` for `my-image.wic`. `-o` (`--output-image`) writes the result to the given path instead, and the input image stays unchanged.
 
 The command fails instead of overwriting an existing file that is not the input image. To overwrite it, name it with `-o`. `copy-from-image` only reads the image and writes nothing.
 

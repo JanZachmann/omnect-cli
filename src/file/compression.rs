@@ -111,7 +111,7 @@ impl Compression {
     /// The first one is used for a compressed image that omnect-cli creates.
     fn extensions(&self) -> &'static [&'static str] {
         match &self {
-            Compression::bzip2 => &["bzip2", "bz2"],
+            Compression::bzip2 => &["bz2", "bzip2"],
             Compression::gzip => &["gzip", "gz"],
             Compression::xz { .. } => &["xz"],
         }
@@ -412,6 +412,16 @@ mod tests {
                 );
                 assert!(Compression::has_extension(&path));
             }
+        }
+    }
+
+    #[test]
+    fn compressed_path_has_an_extension_bmaptool_reads() {
+        let image = Path::new("image.wic");
+        let expected = ["image.wic.bz2", "image.wic.gzip", "image.wic.xz"];
+
+        for (compression, expected) in all_compressions().iter().zip(expected) {
+            assert_eq!(compression.compressed_path(image), Path::new(expected));
         }
     }
 
