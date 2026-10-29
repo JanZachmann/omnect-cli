@@ -142,18 +142,20 @@ fn input_bmap_error(path: &Path) -> String {
     )
 }
 
-/// Runs `command` on a temp copy of the image and writes nothing back.
+/// Runs `command` on the image, or on a decompressed temp copy of a compressed image.
 fn run_read_only_image_command<F>(image_file: PathBuf, command: F) -> Result<()>
 where
     F: FnOnce(&PathBuf) -> Result<()>,
 {
     ensure_image_exists(&image_file)?;
 
-    let tmp_dir = tempfile::tempdir().context("cannot create a temp dir")?;
-    let source_compression = Compression::from_file(&image_file)?;
-    let tmp_image_file = temp_image(&image_file, source_compression.as_ref(), tmp_dir.path())?;
-
-    command(&tmp_image_file)
+    match Compression::from_file(&image_file)? {
+        Some(c) => {
+            let tmp_dir = tempfile::tempdir().context("cannot create a temp dir")?;
+            command(&compression::decompress(&image_file, &c, tmp_dir.path())?)
+        }
+        None => command(&image_file),
+    }
 }
 
 fn ensure_image_exists(image_file: &Path) -> Result<()> {
