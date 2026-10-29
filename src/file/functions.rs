@@ -419,19 +419,12 @@ fn read_partition(
 
     let image =
         fs::File::open(image_file).context(format!("read_partition: cannot open {image_file}"))?;
-    let partition = fs::File::create(partition_file)
-        .context(format!("read_partition: cannot create {partition_file}"))?;
-    let len = partition_info.count * SECTOR_SIZE;
-    partition
-        .set_len(len)
-        .context("read_partition: cannot set partition file size")?;
 
-    sparse::copy_range(
+    sparse::copy_to_new_file(
         &image,
         partition_info.start * SECTOR_SIZE,
-        &partition,
-        0,
-        len,
+        Path::new(partition_file),
+        partition_info.count * SECTOR_SIZE,
     )
 }
 

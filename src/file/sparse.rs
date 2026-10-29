@@ -7,6 +7,7 @@ use std::{
     fs::File,
     io::{self, Read, Seek},
     ops::Range,
+    path::Path,
 };
 
 /// Returns the byte ranges of `file` between `start` and `end` that hold data.
@@ -81,6 +82,17 @@ pub fn copy_range(
     Ok(())
 }
 
+/// Creates `dst` with `len` bytes and copies `len` bytes of `src` at `src_offset` into it.
+/// Holes of `src` stay holes in `dst`.
+pub fn copy_to_new_file(src: &File, src_offset: u64, dst: &Path, len: u64) -> Result<()> {
+    let dst =
+        File::create(dst).context(format!("copy_to_new_file: cannot create {}", dst.display()))?;
+    dst.set_len(len)
+        .context("copy_to_new_file: cannot set destination size")?;
+
+    copy_range(src, src_offset, &dst, 0, len)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::file::sparse::*;
@@ -135,20 +147,17 @@ mod tests {
     }
 
     #[test]
-    fn copy_range_keeps_holes() {
+    fn copy_to_new_file_keeps_holes() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let src = sparse_file(dir.path());
-        let dst = File::options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(dir.path().join("dst"))
-            .expect("create file");
+        let dst_path = dir.path().join("dst");
         let len = (FILE_BLOCKS - DST_OFFSET_BLOCKS) * BLOCK_SIZE;
-        dst.set_len(len).expect("set size");
 
-        copy_range(&src, DST_OFFSET_BLOCKS * BLOCK_SIZE, &dst, 0, len).expect("copy range");
+        copy_to_new_file(&src, DST_OFFSET_BLOCKS * BLOCK_SIZE, &dst_path, len)
+            .expect("copy to new file");
 
+        let dst = File::open(&dst_path).expect("open file");
+        assert_eq!(dst.metadata().expect("metadata").len(), len);
         let data_start = (DATA_BLOCK - DST_OFFSET_BLOCKS) * BLOCK_SIZE;
         assert_eq!(
             data_ranges(&dst, 0, len).expect("data ranges"),

@@ -167,11 +167,8 @@ fn copy_image(from: &Path, to: &Path) -> Result<()> {
         .metadata()
         .context("copy_image: cannot get source size")?
         .len();
-    let dst = fs::File::create(to).context("copy_image: cannot create destination")?;
-    dst.set_len(len)
-        .context("copy_image: cannot set destination size")?;
 
-    file::sparse::copy_range(&src, 0, &dst, 0, len)
+    file::sparse::copy_to_new_file(&src, 0, to, len)
 }
 
 struct CertInfo {
